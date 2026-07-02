@@ -168,7 +168,11 @@ def run(limit: int | None) -> dict:
                 system=system,
                 messages=[{"role": "user", "content": _lead_user_msg(lead)}],
             )
-            pkg = _parse(msg.content[0].text)
+            text = next((b.text for b in msg.content
+                         if getattr(b, "type", "") == "text" and b.text), None)
+            if text is None:
+                raise ValueError("model returned no text block")
+            pkg = _parse(text)
             if not pkg["linkedin"] or not pkg["email_body"]:
                 raise ValueError("model returned empty outreach")
 

@@ -133,7 +133,11 @@ def review(all_pending: bool, limit: int | None) -> dict:
                 system=system,
                 messages=[{"role": "user", "content": _lead_user_msg(lead)}],
             )
-            verdict = _parse_verdict(msg.content[0].text)
+            text = next((b.text for b in msg.content
+                         if getattr(b, "type", "") == "text" and b.text), None)
+            if text is None:
+                raise ValueError("model returned no text block")
+            verdict = _parse_verdict(text)
             breakdown = f"[{MODEL}] {verdict['tier']}: {verdict['reason']}"
             if verdict["tier"] == "Reject":
                 breakdown = f"[{MODEL}] REJECT: {verdict['reason']}"

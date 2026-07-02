@@ -409,7 +409,7 @@ def _build_cover_letter(client: anthropic.Anthropic, pkg_dir: Path, profile: dic
             f"Write the cover letter now.")
     msg = client.messages.create(model=WRITER_MODEL, max_tokens=1500,
                                  system=system, messages=[{"role": "user", "content": user}])
-    raw = msg.content[0].text
+    raw = _first_text(msg) or ""
     parsed = _parse_files(raw)
     content = parsed.get("cover-letter.md") or raw
     if profile_config.style_cfg(profile).get("scrub_em_dashes", True):
@@ -498,6 +498,16 @@ def _basic_checks(files: dict[str, str], banned_phrases: list[str]) -> list[str]
 # Per-job pipeline
 # ---------------------------------------------------------------------------
 
+def _first_text(msg) -> str | None:
+    """Return the first text block's content, or None if the response has none.
+    Models with extended thinking (e.g. claude-sonnet-5) prepend a thinking
+    block, so msg.content[0] is not reliably the text block."""
+    for block in msg.content:
+        if getattr(block, "type", "") == "text" and block.text:
+            return block.text
+    return None
+
+
 def _call_researcher(client: anthropic.Anthropic, system_blocks: list[dict],
                      user_content: str) -> dict | None:
     try:
@@ -530,7 +540,7 @@ def _call_writer(client: anthropic.Anthropic, system_blocks: list[dict],
     except Exception as e:
         print(f"    [error] Writer call failed: {e}")
         return None
-    return msg.content[0].text
+    return _first_text(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -671,7 +681,9 @@ def _call_revisor(client: anthropic.Anthropic, writer_system: list[dict],
     except Exception as e:
         print(f"    [error] Revisor call failed: {e}")
         return None
-    raw = msg.content[0].text
+    raw = _first_text(msg)
+    if raw is None:
+        return None
     parsed = _parse_files(raw)
     return parsed.get("resume.md") or raw
 
@@ -750,6 +762,8 @@ Produce the resume.md file now."""
         print(f"    [2/5] Writer ({WRITER_MODEL})...")
     raw_output = _call_writer(client, writer_system, writer_user)
     if raw_output is None:
+        if verbose:
+            print("    [error] Writer returned no text output")
         return False, None
 
     # --- Parse ---

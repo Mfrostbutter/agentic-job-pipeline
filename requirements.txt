@@ -1,0 +1,10 @@
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+anthropic==0.46.0
+requests==2.33.0
+python-dotenv==1.2.2
+pydantic==2.10.3
+psycopg2-binary==2.9.11
+markdown
+weasyprint
+PyYAML==6.0.2

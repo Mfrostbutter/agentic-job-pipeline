@@ -1,0 +1,110 @@
+# ============================================================================
+# Job Pipeline profile: the ONE file that points the engine at YOUR search.
+#
+# Copy to profile.yaml (same folder) and edit. profile.yaml is gitignored.
+# Everything personal lives here and in profile.md; the code stays generic.
+#
+# Recruiter mode: this same file retargets the engine at sourcing candidates
+# or accounts instead of hunting jobs. See docs/RECRUITER-MODE.md.
+# ============================================================================
+
+candidate:
+  name: Alex Example
+  location: Chicago, IL
+  email: alex@example.com
+  phone: 555-010-0000
+  # Shown on the resume contact line, in order.
+  links:
+    - linkedin.com/in/alex-example
+    - alexexample.dev
+
+search:
+  # Hard salary floor in whole dollars. 0 disables the check.
+  salary_floor: 100000
+
+  # The titles you actually want. Used three ways:
+  #   1. Quoted into the AI triage rubric as the allowed title shapes.
+  #   2. Auto-promote signal when combined with preferred_companies.
+  #   3. Good defaults for the n8n scraper keywords (set those separately
+  #      in the workflow Config node or the custom-scrape form).
+  target_titles:
+    - Platform Engineer
+    - Data Engineer
+    - Solutions Architect
+
+  # Free text appended to the triage rubric. Explain nuance the title list
+  # can't carry: seniority range, IC vs management, adjacent titles that
+  # count, titles that look right but aren't.
+  title_guidance: >
+    Mid to senior individual-contributor roles. "Staff" and "Principal"
+    variants of the target titles qualify. Pure people-management roles do
+    not. A DevOps Engineer role with heavy platform scope counts as
+    Platform Engineer.
+
+  # Free text describing where you can work. The triage model applies this.
+  location_policy: >
+    Remote anywhere in the United States, or on-site/hybrid within commuting
+    distance of Chicago. Reject roles requiring on-site presence elsewhere.
+
+  # Free-text hard-reject rules, one per line. Each becomes a bullet in the
+  # rubric's reject list.
+  auto_reject_rules:
+    - Junior, associate, entry-level, intern, or short-term contract roles
+    - Pure sales or quota-carrying roles with no technical scope
+    - Roles where the stated compensation band is entirely below the salary floor
+
+  # Companies you would fast-track. A posting from one of these whose title
+  # matches target_titles is auto-promoted to Top Tier before the AI runs.
+  preferred_companies: []
+    # - example corp
+    # - acme robotics
+
+  # ---- Deterministic pre-classifier knobs (regexes, case-insensitive) ----
+  # These run BEFORE any AI call and cost nothing. Tune to taste.
+
+  # Titles matching any of these are rejected outright.
+  hard_reject_title_patterns:
+    - '\bintern(ship)?\b'
+    - '\b(junior|entry.level)\b'
+
+  # Locations matching any of these are rejected (e.g. countries you cannot
+  # work in). Leave empty to accept everything.
+  reject_location_patterns: []
+    # - '\bunited kingdom\b'
+    # - '\bindia\b'
+
+  # Locations matching these are demoted to Second Choice instead of rejected
+  # (e.g. maybe-compatible timezones).
+  demote_location_patterns: []
+    # - '\bcanada\b'
+
+  # If a location ALSO matches one of these, the reject/demote patterns above
+  # are skipped (e.g. "Remote, US" listings that mention other regions).
+  location_override_patterns:
+    - '\bunited states\b'
+    - '\bus.remote\b'
+    - '\bremote[, ]+us\b'
+
+  # Rows whose scraper relevance score is below this AND whose title carries
+  # no promote token are demoted to Second Choice without an AI call.
+  low_score_threshold: 25
+
+  # Title tokens that rescue a low-scoring row from the demotion above.
+  promote_tokens:
+    - architect
+    - platform
+    - solutions
+
+style:
+  # Replace em dashes with commas in generated documents (defensive post-pass).
+  scrub_em_dashes: true
+
+  # Phrases the writer must never use; the critic scores drafts against this.
+  banned_phrases:
+    - iconic
+    - groundbreaking
+    - visionary
+    - cutting-edge
+    - world-class
+    - best-in-class
+    - revolutionary

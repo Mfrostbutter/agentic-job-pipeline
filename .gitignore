@@ -1,0 +1,31 @@
+# Secrets and local config
+.env
+*.env.local
+
+# Your filled-in profile is personal; only the examples ship
+profile/profile.yaml
+profile/profile.md
+profile/resume-example.md
+profile/resume-template.md
+
+# Generated application packages (resumes, cover letters, PDFs)
+data/
+*.pdf
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Data dumps
+*.csv
+*.sqlite
+*.dump
+
+# Node / editor / OS noise
+node_modules/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

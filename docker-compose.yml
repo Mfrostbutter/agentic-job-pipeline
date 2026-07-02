@@ -1,0 +1,58 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: jobpipeline-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${PG_DB:-jobpipeline}
+      POSTGRES_USER: ${PG_USER:-pipeline}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+    ports:
+      # Published so n8n (running elsewhere) can reach it. Remove if n8n
+      # shares this compose network or you add n8n as a service here.
+      - "${HOST_BIND_IP:-127.0.0.1}:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Schema is applied automatically on FIRST boot of an empty data dir.
+      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-pipeline} -d ${PG_DB:-jobpipeline}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    container_name: jobpipeline-app
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PG_HOST: postgres
+      APPLICATIONS_DIR: /data/applications
+      PROFILE_DIR: /app/profile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${HOST_BIND_IP:-127.0.0.1}:8094:8094"
+    volumes:
+      # Generated application packages land here (visible on the host).
+      - ./data/applications:/data/applications
+      # Your profile (search config + digest + templates). Edit on the host,
+      # no rebuild needed.
+      - ./profile:/app/profile:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8094/health', timeout=2).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  pgdata:

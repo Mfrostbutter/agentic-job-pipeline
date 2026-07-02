@@ -1,0 +1,777 @@
+{
+  "name": "Job Pipeline - Scheduled LinkedIn Scrape",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "c55368da-3140-45fc-8b59-73af77135e92",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "position": [
+        -16,
+        320
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== JOB SEARCH CONFIG (SCHEDULED SCRAPE) =====\n// EDIT ME: this node is the one place you tune the daily search.\n\n// The titles to search for. Each fires one LinkedIn query per location plan\n// per work type (capped at maxQueriesPerRun).\nconst roleKeywords = [\n  'Platform Engineer',\n  'Data Engineer',\n  'Solutions Architect',\n];\n\nconst config = {\n  workflowScope: 'scheduled',\n\n  // Where to search. planId is just a label. Use LinkedIn location names\n  // (city, metro area, or a country for remote-anywhere).\n  locationPlans: [\n    { planId: 'us_remote', location: 'United States', workTypes: ['remote'] },\n    // { planId: 'chicago_hybrid', location: 'Chicago, Illinois', workTypes: ['hybrid', 'onsite'] },\n  ],\n\n  datePosted: 'past_24h',        // past_24h | past_week | past_month\n  maxResultsPerSearch: 30,\n\n  fetchFullDescription: true,    // slower + more Apify compute, but the AI triage reads the full JD\n  enrichWithAI: false,\n  actorProxyConfig: {},\n\n  // Don't allow two runs within this window (protects Apify spend).\n  runGuardEnabled: true,\n  runGuardMinMinutes: 45,\n\n  maxQueriesPerRun: 10,\n\n  // Safe mode caps the run while you are testing. Set safeMode: false to go live.\n  safeMode: true,\n  safeMaxQueries: 3,\n  safeMaxResults: 10,\n  safeFetchFullDescription: false,\n\n  testMode: false,\n  testMaxQueries: 2,\n  testMaxResults: 10,\n  testFetchFullDescription: false,\n\n  // ---- Relevance scoring (consumed by the \"Dedup and Score\" node) ----\n  scoring: {\n    titleKeywords: roleKeywords,               // exact title hit: +30\n    partialKeywords: [                          // partial title hit: +15\n      'automation', 'ai', 'platform', 'data', 'integration', 'cloud'\n    ],\n    seniorityWords: [                           // +5\n      'senior', 'staff', 'principal', 'lead', 'architect'\n    ],\n    homeAreaKeywords: [],                       // +15 for on-site roles near you, e.g. ['chicago', 'evanston']\n    bonusJDKeywords: [],                        // +10 when the JD mentions one, e.g. ['kubernetes', 'terraform']\n    secondaryHubKeywords: [],                   // with homeAreaKeywords set, +15 for companies posting in BOTH hubs\n    salaryFloor: 0,                             // whole dollars; 0 disables the salary bonus\n    negativeTitlePatterns: ['\\\\b(intern|junior|entry.level)\\\\b'],  // -20 each\n    highRelevanceThreshold: 60,\n  },\n\n  // Read from n8n's environment. Leave unset to disable Slack posts.\n  slackWebhookUrl: $env.SLACK_WEBHOOK_URL || '',\n};\n\n// Build the query fan-out: keywords x location plans x work types.\nconst searches = [];\nfor (const keywords of roleKeywords) {\n  for (const plan of config.locationPlans) {\n    for (const workType of plan.workTypes) {\n      searches.push({\n        keywords,\n        location: plan.location,\n        workType,\n        datePosted: config.datePosted,\n        maxResults: config.maxResultsPerSearch,\n        scope: config.workflowScope,\n        planId: plan.planId,\n        windowId: 'primary'\n      });\n    }\n  }\n}\nconst maxQueriesPerRun = Math.max(1, Number(config.maxQueriesPerRun ?? 10));\nconfig.linkedinSearches = searches.slice(0, maxQueriesPerRun);\n\nconst effectiveSafeMode = !!(config.safeMode || config.testMode);\nif (effectiveSafeMode) {\n  const maxQueries = Math.max(1, Number(config.safeMaxQueries ?? config.testMaxQueries ?? 1));\n  const maxResults = Math.max(1, Number(config.safeMaxResults ?? config.testMaxResults ?? 10));\n  const safeFetch = (config.safeFetchFullDescription ?? config.testFetchFullDescription ?? false);\n\n  config.linkedinSearches = config.linkedinSearches\n    .slice(0, maxQueries)\n    .map(search => ({ ...search, maxResults: Math.min(Number(search.maxResults || 40), maxResults) }));\n\n  config.fetchFullDescription = !!safeFetch;\n}\n\nconfig._abortRun = false;\nconfig._abortReason = '';\n\ntry {\n  const staticData = $getWorkflowStaticData('global');\n  const nowMs = Date.now();\n  const minGapMs = Math.max(1, Number(config.runGuardMinMinutes || 45)) * 60 * 1000;\n  const runGuardKey = `linkedinScraperLastStartMs_${config.workflowScope}`;\n  const lastStartMs = Number(staticData[runGuardKey] || 0);\n\n  if (config.runGuardEnabled && lastStartMs && (nowMs - lastStartMs) < minGapMs) {\n    const elapsedMinutes = Math.floor((nowMs - lastStartMs) / 60000);\n    const waitMinutes = Math.ceil((minGapMs - (nowMs - lastStartMs)) / 60000);\n    config._abortRun = true;\n    config._abortReason = `Blocked by run guard: last run started ${elapsedMinutes} minute(s) ago. Try again in about ${waitMinutes} minute(s).`;\n  } else {\n    staticData[runGuardKey] = nowMs;\n  }\n} catch (error) {\n  config._abortRun = false;\n  config._abortReason = `Run guard unavailable: ${error?.message || String(error)}`;\n}\n\nreturn [{ json: config }];\n"
+      },
+      "id": "5e29007d-6295-40ef-8faa-6839655fb07b",
+      "name": "Config",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        640,
+        320
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "jsCode": "// Split LinkedIn searches into individual items\nconst config = $input.first().json;\n\nif (config._abortRun) {\n  console.log(config._abortReason || 'Run aborted by guard.');\n  return [];\n}\n\nconst scope = config.workflowScope || 'default';\nconst staticData = $getWorkflowStaticData('global');\n\n// Guard 1: never emit twice within the same execution\nconst execGuardKey = `splitLastExecutionId_${scope}`;\nconst currentExecutionId = String($execution.id || '');\nif (staticData[execGuardKey] === currentExecutionId) {\n  return [];\n}\nstaticData[execGuardKey] = currentExecutionId;\n\nconst searches = Array.isArray(config.linkedinSearches) ? config.linkedinSearches : [];\n\n// Safety dedupe in case upstream config accidentally repeats query tuples\nconst seen = new Set();\nconst uniqueSearches = [];\nfor (const search of searches) {\n  const key = [\n    search.keywords,\n    search.location,\n    search.workType,\n    search.datePosted,\n    search.windowId || 'primary'\n  ]\n    .map(v => String(v || '').toLowerCase().trim())\n    .join('|');\n\n  if (seen.has(key)) continue;\n  seen.add(key);\n  uniqueSearches.push(search);\n}\n\n// Guard 2 (global fail-safe): max 10 actor calls per role per 15-minute window\nconst HARD_MAX_QUERIES = 10;\nconst BUDGET_WINDOW_MINUTES = 15;\nconst budgetKey = `splitBudget_${scope}`;\nconst now = Date.now();\nlet budget = staticData[budgetKey] || { windowStartMs: now, count: 0 };\n\nconst windowMs = BUDGET_WINDOW_MINUTES * 60 * 1000;\nif (!budget.windowStartMs || (now - Number(budget.windowStartMs)) >= windowMs) {\n  budget = { windowStartMs: now, count: 0 };\n}\n\nconst configuredMax = Math.max(1, Number(config.maxQueriesPerRun ?? HARD_MAX_QUERIES));\nconst remainingBudget = Math.max(0, HARD_MAX_QUERIES - Number(budget.count || 0));\nconst effectiveMax = Math.min(HARD_MAX_QUERIES, configuredMax, remainingBudget);\n\nif (effectiveMax <= 0) {\n  return [];\n}\n\nconst finalSearches = uniqueSearches.slice(0, effectiveMax);\n\nbudget.count = Number(budget.count || 0) + finalSearches.length;\nstaticData[budgetKey] = budget;\n\nreturn finalSearches.map((search, idx) => ({\n  json: {\n    ...search,\n    _queryIndex: idx + 1,\n    _queryCount: finalSearches.length,\n    fetchFullDescription: typeof search.fetchFullDescription === 'boolean'\n      ? search.fetchFullDescription\n      : !!config.fetchFullDescription,\n    enrichWithAI: !!config.enrichWithAI,\n    actorProxyConfig: config.actorProxyConfig || {},\n    _config: config,\n  }\n}));"
+      },
+      "id": "dd71dd58-f887-4c2f-9b28-47068f10e0fe",
+      "name": "Split LinkedIn Queries",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        832,
+        320
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize Mfrostbutter/linkedin-jobs-scraper output to unified job schema\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const d = item.json;\n  // Our actor always emits title + companyName; skip empty records\n  if (!d || !d.title) continue;\n\n  const loc = d.location || '';\n  const workplaceType = d.workRemoteAllowed\n    ? (d.workplaceTypes && d.workplaceTypes[0]) || 'Remote'\n    : 'On-site';\n\n  // salary_low/salary_high come from parser; salary is the raw string\n  let salaryMin = d.salary_low || null;\n  let salaryMax = d.salary_high || null;\n\n  // Carry config forward when available. Actor dataset items usually drop upstream fields,\n  // so fallback to Config node when this workflow path includes it.\n  let cfg = item.json._config;\n  if (!cfg) {\n    try {\n      cfg = $('Config').first()?.json || null;\n    } catch (e) {\n      cfg = null;\n    }\n  }\n\n  results.push({\n    jobTitle: d.title || '',\n    company: d.companyName || '',\n    location: loc,\n    source: 'LinkedIn',\n    sourceId: d.id || `li-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,\n    sourceUrl: d.link || d.applyUrl || '',\n    postedDate: d.postedAt || new Date().toISOString(),\n    salaryMin: salaryMin,\n    salaryMax: salaryMax,\n    employmentType: 'Full-time',\n    workplaceType: workplaceType,\n    companySize: '',\n    companyIndustry: '',\n    descriptionSnippet: (d.descriptionText || '').substring(0, 500),\n    fullDescription: d.descriptionText || '',\n    easyApply: false,\n    applicants: null,\n    _config: cfg,\n  });\n}\n\nreturn results.map(r => ({ json: r }));"
+      },
+      "id": "c4613412-ef6c-4693-b872-4d70f4c3f8d9",
+      "name": "Normalize LinkedIn",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        336,
+        848
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== DEDUP + SCORE =====\n// Deduplicates within batch and scores each job for relevance.\n// Every keyword list comes from the Config node's scoring block;\n// the DEFAULTS below only apply if Config is missing.\n\nconst items = $input.all();\n\nconst DEFAULT_SCORING = {\n  titleKeywords: [],\n  partialKeywords: ['engineer', 'architect', 'developer', 'platform', 'data'],\n  seniorityWords: ['senior', 'staff', 'principal', 'lead', 'architect'],\n  homeAreaKeywords: [],\n  bonusJDKeywords: [],\n  secondaryHubKeywords: [],\n  salaryFloor: 0,\n  negativeTitlePatterns: ['\\\\b(intern|junior|entry.level)\\\\b'],\n  highRelevanceThreshold: 60,\n};\n\nfunction getScoringConfig() {\n  const fromItem = items[0]?.json?._config?.scoring;\n  if (fromItem && typeof fromItem === 'object') return { ...DEFAULT_SCORING, ...fromItem };\n  return DEFAULT_SCORING;\n}\n\nconst config = getScoringConfig();\nconst salaryFloor = Math.max(0, Number(config.salaryFloor || 0));\n\n// Dedup within batch by normalized title + company\nconst seen = new Set();\nconst unique = [];\nfor (const item of items) {\n  const d = item.json;\n  const key = `${(d.jobTitle || '').toLowerCase().trim()}|${(d.company || '').toLowerCase().trim()}`;\n  if (seen.has(key)) continue;\n  seen.add(key);\n  unique.push(d);\n}\n\n// Scoring function\nfunction scoreJob(job) {\n  let score = 0;\n  const breakdown = [];\n  const titleLower = (job.jobTitle || '').toLowerCase();\n  const descLower = (job.fullDescription || '').toLowerCase();\n\n  // Title exact match (+30)\n  const exactMatch = config.titleKeywords.some(kw => titleLower.includes(String(kw).toLowerCase()));\n  if (exactMatch) {\n    score += 30;\n    breakdown.push('Title exact match: +30');\n  } else {\n    // Partial keyword match (+15)\n    const hasPartial = config.partialKeywords.some(kw => titleLower.includes(String(kw).toLowerCase()));\n    if (hasPartial) {\n      score += 15;\n      breakdown.push('Title partial match: +15');\n    }\n  }\n\n  // Seniority signal (+5)\n  if (config.seniorityWords.some(w => titleLower.includes(String(w).toLowerCase()))) {\n    score += 5;\n    breakdown.push('Senior title: +5');\n  }\n\n  // Location: Remote/Hybrid (+20), home area (+15)\n  const locLower = (job.location || '').toLowerCase();\n  const wpLower = (job.workplaceType || '').toLowerCase();\n  if (wpLower.includes('remote') || locLower.includes('remote')) {\n    score += 20;\n    breakdown.push('Remote: +20');\n  } else if (wpLower.includes('hybrid') || locLower.includes('hybrid')) {\n    score += 20;\n    breakdown.push('Hybrid: +20');\n  } else if (config.homeAreaKeywords.some(kw => locLower.includes(String(kw).toLowerCase()))) {\n    score += 15;\n    breakdown.push('Home area: +15');\n  }\n\n  // Salary at or above the configured floor (+10 / +5)\n  if (salaryFloor > 0) {\n    if (job.salaryMin && job.salaryMin >= salaryFloor) {\n      score += 10;\n      breakdown.push(`Salary >= $${salaryFloor}: +10`);\n    } else if (job.salaryMax && job.salaryMax >= salaryFloor) {\n      score += 5;\n      breakdown.push(`Salary range includes $${salaryFloor}+: +5`);\n    }\n  }\n\n  // Mid-market company 100-2000 employees (+10)\n  const sizeStr = (job.companySize || '').replace(/,/g, '');\n  const sizeMatch = sizeStr.match(/(\\d+)/);\n  if (sizeMatch) {\n    const size = parseInt(sizeMatch[1]);\n    if (size >= 100 && size <= 2000) {\n      score += 10;\n      breakdown.push('Mid-market company (100-2K): +10');\n    } else if (size > 2000 && size <= 10000) {\n      score += 5;\n      breakdown.push('Large company (2K-10K): +5');\n    }\n  }\n\n  // Bonus JD keywords in description (+10)\n  const hasBonus = config.bonusJDKeywords.some(kw => descLower.includes(String(kw).toLowerCase()));\n  if (hasBonus) {\n    score += 10;\n    breakdown.push('Bonus JD keyword match: +10');\n  }\n\n  // Negative title patterns (-20 each)\n  for (const pat of config.negativeTitlePatterns || []) {\n    try {\n      if (titleLower.match(new RegExp(pat, 'i'))) {\n        score -= 20;\n        breakdown.push(`Negative title pattern (${pat}): -20`);\n      }\n    } catch (e) { /* bad regex in config; skip */ }\n  }\n\n  return {\n    relevanceScore: Math.max(0, Math.min(100, score)),\n    scoreBreakdown: JSON.stringify(breakdown),\n    isHighRelevance: score >= config.highRelevanceThreshold,\n    bonusKeywordMatch: hasBonus\n  };\n}\n\n// Score each job\nconst scored = unique.map(job => {\n  const scores = scoreJob(job);\n  return {\n    json: {\n      ...job,\n      ...scores,\n      firstSeen: new Date().toISOString(),\n      lastSeen: new Date().toISOString(),\n      status: 'New'\n    }\n  };\n});\n\n// Sort by relevance score descending\nscored.sort((a, b) => b.json.relevanceScore - a.json.relevanceScore);\n\n// ===== DUAL-HUB OFFICE DETECTION (optional) =====\n// If you configure BOTH homeAreaKeywords and secondaryHubKeywords, companies\n// posting the same search in both hubs get +15 (signals a real presence in\n// your area rather than a one-off posting).\nconst homeKws = config.homeAreaKeywords || [];\nconst hubKws = config.secondaryHubKeywords || [];\nif (homeKws.length && hubKws.length) {\n  const companiesByRegion = {};\n  for (const item of scored) {\n    const company = (item.json.company || '').toLowerCase().trim();\n    if (!company) continue;\n    const loc = (item.json.location || '').toLowerCase();\n    const isHub = hubKws.some(kw => loc.includes(String(kw).toLowerCase()));\n    const isHome = homeKws.some(kw => loc.includes(String(kw).toLowerCase()));\n    if (!companiesByRegion[company]) companiesByRegion[company] = { home: false, hub: false };\n    if (isHub) companiesByRegion[company].hub = true;\n    if (isHome) companiesByRegion[company].home = true;\n  }\n\n  for (const item of scored) {\n    const company = (item.json.company || '').toLowerCase().trim();\n    const isDual = !!(companiesByRegion[company] && companiesByRegion[company].home && companiesByRegion[company].hub);\n    item.json.dualHubOffice = isDual;\n    if (isDual) {\n      item.json.relevanceScore = Math.min(100, item.json.relevanceScore + 15);\n      const breakdown = JSON.parse(item.json.scoreBreakdown || '[]');\n      breakdown.push('Dual-hub office: +15');\n      item.json.scoreBreakdown = JSON.stringify(breakdown);\n    }\n  }\n\n  // Re-sort after dual-hub bonus\n  scored.sort((a, b) => b.json.relevanceScore - a.json.relevanceScore);\n}\n\nreturn scored;\n"
+      },
+      "id": "c587273b-40fa-45f0-9866-98a5fd32ee58",
+      "name": "Dedup and Score",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        496,
+        848
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=SELECT '{{ $json.sourceId }}'::text AS source_id, EXISTS(SELECT 1 FROM seen_jobs WHERE job_id = '{{ $json.sourceId }}') AS already_seen;",
+        "options": {}
+      },
+      "id": "ab904cad-a131-4999-9e1c-307660174c8b",
+      "name": "Filter Already Seen",
+      "type": "n8n-nodes-base.postgres",
+      "position": [
+        672,
+        848
+      ],
+      "typeVersion": 2.6,
+      "credentials": {
+        "postgres": {
+          "name": "Job Pipeline Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "cond-is-new-pg",
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.already_seen }}",
+              "rightValue": ""
+            }
+          ]
+        },
+        "options": {
+          "looseTypeValidation": true
+        }
+      },
+      "id": "5dd8ff92-5c3a-4d1d-9cfe-b414dc7fc55a",
+      "name": "Is New Job?",
+      "type": "n8n-nodes-base.if",
+      "position": [
+        816,
+        848
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO jobs (job_id, title, company, location, source_url, workplace, status, relevance_score, breakdown, salary_min, salary_max, description)\nVALUES ($1,$2,$3,$4,$5,$6,'New',$7,$8,$9,$10,$11)\nON CONFLICT (job_id) DO NOTHING\nRETURNING job_id;",
+        "options": {
+          "queryReplacement": "={{ (() => { const d = $('Dedup and Score').all().find(x => String(x.json.sourceId) === String($json.source_id))?.json || {}; return [ String(d.sourceId||''), d.jobTitle||'', d.company||'', d.location||'', d.sourceUrl||'', d.workplaceType||'', Number(d.relevanceScore||0), d.scoreBreakdown||'', (d.salaryMin==null?null:Number(d.salaryMin)), (d.salaryMax==null?null:Number(d.salaryMax)), d.fullDescription||'' ]; })() }}"
+        }
+      },
+      "id": "3a51f199-6aff-40e8-941d-cfb073873046",
+      "name": "Create Jobs Record",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        976,
+        832
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "Job Pipeline Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "435520ce-5d69-4a3b-b3d2-2144cd4301ab",
+      "name": "Skip Existing",
+      "type": "n8n-nodes-base.noOp",
+      "position": [
+        1056,
+        1008
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\nlet cfg = items[0]?.json?._config || null;\nif (!cfg) { try { cfg = $('Dedup and Score').first()?.json?._config || null; } catch {} }\n\n// Empty webhook URL = Slack disabled; the \"Has Notifications?\" gate then skips the post.\nconst slackWebhookUrl = cfg?.slackWebhookUrl || '';\n\nlet succeeded = 0;\nlet rateLimited = 0;\nlet otherFailed = 0;\nfor (const i of items) {\n  const j = i.json || {};\n  if (j.job_id) succeeded += 1;\n  else if (Array.isArray(j.errors) && j.errors.some(e => (e.error||'').includes('RATE_LIMIT'))) rateLimited += 1;\n  else if (j.errors || j.error) otherFailed += 1;\n}\nconst total = items.length;\n// count drives the Slack gate: zero it out when Slack is disabled.\nconst count = slackWebhookUrl ? succeeded : 0;\n\nlet message;\nif (total === 0) {\n  message = 'No new jobs added.';\n} else if (rateLimited === 0 && otherFailed === 0) {\n  message = `${succeeded} new jobs added to the jobs database.`;\n} else {\n  message = `Postgres: ${succeeded} added, ${rateLimited} rate-limited, ${otherFailed} other failed (out of ${total}).`;\n}\n\nreturn [{ json: { message, count, succeeded, rateLimited, otherFailed, total, slackWebhookUrl } }];\n"
+      },
+      "id": "55303384-e1c2-46ff-a2cf-0da05c69c00a",
+      "name": "Build Notification",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        1328,
+        304
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "cond-has-jobs",
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              },
+              "leftValue": "={{ $json.count }}",
+              "rightValue": 0
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "39d99bde-8fa6-4612-960d-8b60c68fef43",
+      "name": "Has Notifications?",
+      "type": "n8n-nodes-base.if",
+      "position": [
+        1488,
+        304
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.slackWebhookUrl || 'https://hooks.slack.com/services/DISABLED' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": {{ JSON.stringify($json.message || \"No message\") }},\n  \"mrkdwn\": true,\n  \"unfurl_links\": false,\n  \"unfurl_media\": false\n}\n",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "text",
+              "outputPropertyName": "=data"
+            }
+          }
+        }
+      },
+      "id": "f9487924-2c57-4d80-b5fd-421ab4ee814a",
+      "name": "Send Slack Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        1696,
+        288
+      ],
+      "typeVersion": 4.2
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.apify.com/v2/acts/Mfrostbutter~linkedin-jobs-scraper/run-sync-get-dataset-items",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ (() => {\n  const idx = Number($json._queryIndex || 0);\n  if (idx > 10) throw new Error('Safety cap exceeded: query index ' + idx + ' > 10');\n  return {\n    keywords: $json.keywords,\n    location: $json.location,\n    workType: $json.workType,\n    datePosted: $json.datePosted,\n    maxResults: $json.maxResults,\n    fetchFullDescription: $json.fetchFullDescription,\n    proxyConfig: $json.actorProxyConfig || {},\n    _n8nQueryIndex: idx,\n    _n8nQueryCount: Number($json._queryCount || 0),\n    _n8nExecutionId: String($execution.id || ''),\n    _n8nWorkflowScope: String($json._config?.workflowScope || ''),\n  };\n})() }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 5000
+            }
+          },
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 600000
+        }
+      },
+      "id": "http-apify-sync-7e3a",
+      "name": "Run Apify (HTTP Sync)",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        1024,
+        320
+      ],
+      "typeVersion": 4.2,
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "Apify API (Header Auth)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Apify run-sync-get-dataset-items returns an array of dataset items.\n// n8n HTTP node delivers it as either {json: <array>} or wraps in {json: {body: <array>}}.\n// Explode into one n8n item per dataset record.\nconst out = [];\nfor (const item of $input.all()) {\n  const j = item.json;\n  let arr = null;\n  if (Array.isArray(j)) arr = j;\n  else if (j && Array.isArray(j.body)) arr = j.body;\n  else if (j && Array.isArray(j.data)) arr = j.data;\n  else if (j && typeof j === 'object') arr = [j];\n  if (!arr) continue;\n  for (const r of arr) {\n    if (r && typeof r === 'object') out.push({ json: r });\n  }\n}\nreturn out;\n"
+      },
+      "id": "flatten-apify-7e3b",
+      "name": "Flatten Apify Dataset",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        176,
+        848
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 7
+            }
+          ]
+        }
+      },
+      "id": "2d6bb306-4dec-42dc-b1af-b62b7224922a",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "position": [
+        192,
+        416
+      ],
+      "typeVersion": 1.3
+    },
+    {
+      "parameters": {
+        "content": "# ⚡ Trigger\nRuns daily on a schedule to keep your\npipeline fresh. The manual trigger and an\nauthenticated webhook let you (or the web\nUI) fire it on demand.",
+        "height": 480,
+        "width": 368,
+        "color": 4
+      },
+      "id": "4f80c156-53e2-447b-bd85-782a6bd1ec65",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        128,
+        96
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "# 🔍 Build & Send Search Query\nLoads your search config (titles, location,\nfilters), splits into individual LinkedIn\nqueries, and fires each one to Apify\nsynchronously via HTTP.",
+        "height": 480,
+        "width": 752,
+        "color": 6
+      },
+      "id": "79119b94-550a-49a5-828b-2241688b6837",
+      "name": "Sticky Note1",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        512,
+        96
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "# 🧹 Clean & Score\nFlattens raw Apify results, normalizes\nLinkedIn field names, deduplicates listings,\nand applies a relevance score.",
+        "height": 560,
+        "width": 496,
+        "color": 6
+      },
+      "id": "e20b3b71-d994-46cd-b0b8-a6fe8a746bb9",
+      "name": "Sticky Note2",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        128,
+        592
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "# 🗃️ Postgres Store\n  **Two tables: `seen_jobs` is a dedup ledger of every source id ever scraped, so duplicates get filtered before they ever become a record. New jobs land in `jobs` as fresh rows; duplicates skip silently. Score, status, and review fields live on the row and drive the web UI views.**",
+        "height": 560,
+        "width": 624,
+        "color": 6
+      },
+      "id": "0d11fea3-7b21-4d25-a37b-22d3737c173b",
+      "name": "Sticky Note3",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        640,
+        592
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "# 📄 Review + Build (Claude agents)\n  **Hands the run off to the self-hosted FastAPI service. A Haiku agent reviews, scores, and tiers every new job in Postgres automatically. Build stays manual: you pick the jobs you actually want in the web UI, and a Sonnet agent writes the resume package for those, so you are not spending API credits on every listing.**",
+        "height": 560,
+        "width": 592,
+        "color": 6
+      },
+      "id": "e9fe8762-24f4-4949-8ff4-ecd11a461c68",
+      "name": "Sticky Note4",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        1280,
+        592
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "# 🔔 Slack Notify\nBuilds a summary of new jobs. If new jobs\nexist and SLACK_WEBHOOK_URL is set, fires a\nSlack alert to your channel. No results = no\nnoise.",
+        "height": 480,
+        "width": 592,
+        "color": 6
+      },
+      "id": "4e92c0a3-baa4-4f46-bc81-93b44749c4bc",
+      "name": "Sticky Note5",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        1280,
+        96
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.REVIEW_API_URL || 'http://localhost:8094') + '/jobs/review' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"chain_build\": false,\n  \"post_slack\": false\n}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 3600000
+        }
+      },
+      "id": "2c69a7bd-02bc-4c92-91e8-7a5e24db67c2",
+      "name": "Trigger Review + Build",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        1488,
+        912
+      ],
+      "typeVersion": 4.2,
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "Job Pipeline API Bearer"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.slackWebhookUrl || 'https://hooks.slack.com/services/DISABLED' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": {{ JSON.stringify($json.message || \"\") }},\n  \"mrkdwn\": true,\n  \"unfurl_links\": false,\n  \"unfurl_media\": false\n}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "text",
+              "outputPropertyName": "=data"
+            }
+          }
+        }
+      },
+      "id": "6e8b6f7d-f52c-44c1-8fc1-d06712bd6a92",
+      "name": "Notify Run Summary",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        2192,
+        736
+      ],
+      "typeVersion": 4.2
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO seen_jobs (job_id, source, status)\nVALUES ($1, $2, 'new')\nON CONFLICT (job_id) DO UPDATE SET last_updated = NOW();",
+        "options": {
+          "queryReplacement": "={{ (() => { const d = $('Dedup and Score').all().find(x => String(x.json.sourceId) === String($json.job_id))?.json || {}; return [ String($json.job_id), String(d.source||'').toLowerCase() ]; })() }}"
+        }
+      },
+      "id": "cbfc8139-4e6f-4b9f-b4a2-d8f6e62d4b3c",
+      "name": "Mark as Seen",
+      "type": "n8n-nodes-base.postgres",
+      "position": [
+        1152,
+        832
+      ],
+      "typeVersion": 2.6,
+      "credentials": {
+        "postgres": {
+          "name": "Job Pipeline Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const NL = String.fromCharCode(10);\nconst items = $input.all();\nconst r = (items[0] && items[0].json) || {};\nconst date = r.date || new Date().toISOString().split('T')[0];\nconst review = r.review || {};\nconst build = r.build || {};\nlet slackWebhookUrl = '';\nfunction tryNode(name) { try { const n = $(name).first(); return (n && n.json && n.json.slackWebhookUrl) || ''; } catch (e) { return ''; } }\nslackWebhookUrl = tryNode('Config');\n// Empty = Slack disabled; the notify node then posts to a dead URL with neverError on.\nconst lines = [':dart: *Job scrape run - ' + date + '*'];\nif (review.error) {\n  lines.push('Review FAILED: ' + review.error);\n  if (review.stderr) lines.push('```' + String(review.stderr).slice(0, 1000) + '```');\n} else {\n  const scraped = (review.scraped != null) ? review.scraped : 0;\n  const top = (review.top != null) ? review.top : 0;\n  const second = (review.second != null) ? review.second : 0;\n  const rejected = (review.rejected != null) ? review.rejected : 0;\n  lines.push('Scraped: ' + scraped + '  -  Top: ' + top + '  -  Second: ' + second + '  -  Rejected: ' + rejected);\n}\nconst packages = (build && Array.isArray(build.packages)) ? build.packages : [];\nif (packages.length > 0) {\n  lines.push('');\n  lines.push('*Packages built:*');\n  for (const p of packages) { lines.push('- ' + (p.title || '?') + ' @ ' + (p.company || '?')); }\n} else if (build && build.error) {\n  lines.push('');\n  lines.push('Build FAILED: ' + build.error);\n}\nconst message = lines.join(NL);\nreturn [{ json: { message, slackWebhookUrl, date, review, build } }];\n"
+      },
+      "id": "03b2a726-2a04-421f-b70d-50a954f02525",
+      "name": "Format Run Summary",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        2000,
+        736
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "content": "# 📊 Final Run Summary\n\n**Builds a digest of the run (jobs added, dupes skipped, review results) and posts it to Slack, so you can see at a glance how the scrape and review went, straight from Postgres.**",
+        "height": 640,
+        "width": 496,
+        "color": 4
+      },
+      "id": "d3f490bf-8e0f-42de-96a5-afbed41bc84c",
+      "name": "Sticky Note6",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        1888,
+        512
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "job-pipeline/scrape",
+        "authentication": "headerAuth",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        192,
+        256
+      ],
+      "id": "webhook-on-demand-arch-1a2b",
+      "name": "Webhook (On-Demand Trigger)",
+      "webhookId": "wh-job-hunt-scraper-arch-2026-05-16",
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "Job Pipeline Webhook Auth"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook (On-Demand Trigger)": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Split LinkedIn Queries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Apify (HTTP Sync)": {
+      "main": [
+        [
+          {
+            "node": "Flatten Apify Dataset",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Notifications?": {
+      "main": [
+        [
+          {
+            "node": "Send Slack Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Trigger Review + Build": {
+      "main": [
+        [
+          {
+            "node": "Format Run Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark as Seen": {
+      "main": [
+        [
+          {
+            "node": "Trigger Review + Build",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize LinkedIn": {
+      "main": [
+        [
+          {
+            "node": "Dedup and Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Flatten Apify Dataset": {
+      "main": [
+        [
+          {
+            "node": "Normalize LinkedIn",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Run Summary": {
+      "main": [
+        [
+          {
+            "node": "Notify Run Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dedup and Score": {
+      "main": [
+        [
+          {
+            "node": "Filter Already Seen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Notification": {
+      "main": [
+        [
+          {
+            "node": "Has Notifications?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split LinkedIn Queries": {
+      "main": [
+        [
+          {
+            "node": "Run Apify (HTTP Sync)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is New Job?": {
+      "main": [
+        [
+          {
+            "node": "Create Jobs Record",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Skip Existing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Already Seen": {
+      "main": [
+        [
+          {
+            "node": "Is New Job?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Jobs Record": {
+      "main": [
+        [
+          {
+            "node": "Mark as Seen",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Build Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

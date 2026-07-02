@@ -1,0 +1,2195 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=1280, initial-scale=1" />
+<title>Job Pipeline</title>
+<!--
+  Single-file SPA for the Job Pipeline UI. Served by GET /jobs/ui.
+  All API calls go to /jobs/api/* with Bearer auth.
+  No build step. CDN deps only.
+  v1.0.0 - public release
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  // Tailwind config: extend with our brand-tuned light theme.
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          ink: { 900: '#1f2328', 700: '#3a3f47', 600: '#57606a', 400: '#8b949e', 300: '#a8b1bd' },
+          surface: { 0: '#fafafa', 1: '#ffffff', 2: '#f6f7f9', 3: '#eef0f3' },
+          line: { DEFAULT: '#e5e7eb', soft: 'rgba(0,0,0,0.06)' },
+          brand: { 50: '#eef2ff', 100: '#e0e7ff', 500: '#6366f1', 600: '#4f46e5', 700: '#4338ca' },
+          ok: '#1a7f37', danger: '#cf222e', warn: '#9a6700',
+        },
+        fontFamily: {
+          sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+          mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'monospace'],
+        },
+        boxShadow: {
+          card: '0 1px 3px rgba(0,0,0,0.04), 0 1px 2px rgba(0,0,0,0.02)',
+          pop:  '0 4px 12px rgba(0,0,0,0.08), 0 1px 3px rgba(0,0,0,0.04)',
+        },
+      },
+    },
+  };
+</script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.3/dist/cdn.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+<script src="https://unpkg.com/lucide@latest"></script>
+<style>
+  [x-cloak] { display: none !important; }
+  html, body { background: #fafafa; color: #1f2328; font-feature-settings: 'cv02','cv03','cv04','cv11'; -webkit-font-smoothing: antialiased; }
+  body { font-family: 'Inter', ui-sans-serif, system-ui, sans-serif; letter-spacing: -0.005em; }
+  .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+
+  /* ---- Inputs / buttons ---- */
+  .btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 6px; font-size: 13px; font-weight: 500; line-height: 1.25; transition: background 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease, color 0.12s ease; white-space: nowrap; }
+  .btn[disabled] { opacity: 0.55; cursor: not-allowed; }
+  .btn-primary { background: #4f46e5; color: #fff; box-shadow: 0 1px 0 rgba(0,0,0,0.08); }
+  .btn-primary:hover:not([disabled]) { background: #4338ca; }
+  .btn-secondary { background: #fff; color: #1f2328; border: 1px solid #e5e7eb; }
+  .btn-secondary:hover:not([disabled]) { background: #f6f7f9; }
+  .btn-ghost { background: transparent; color: #57606a; }
+  .btn-ghost:hover:not([disabled]) { background: #eef0f3; color: #1f2328; }
+  .btn-danger { background: #cf222e; color: #fff; }
+  .btn-danger:hover:not([disabled]) { background: #a4101b; }
+  .btn-sm { padding: 4px 8px; font-size: 12px; }
+  .btn-icon { padding: 6px; }
+
+  .input, .select-input {
+    width: 100%; background: #fff; color: #1f2328;
+    border: 1px solid #e5e7eb; border-radius: 6px;
+    padding: 6px 10px; font-size: 13px; line-height: 1.25;
+    transition: border-color 0.12s ease, box-shadow 0.12s ease;
+  }
+  .input:focus, .select-input:focus { outline: none; border-color: #4f46e5; box-shadow: 0 0 0 3px rgba(79,70,229,0.12); }
+  .input-sm { padding: 4px 8px; font-size: 12px; }
+
+  /* ---- Card ---- */
+  .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 1px 2px rgba(0,0,0,0.02); }
+
+  /* ---- Sidebar nav item ---- */
+  .nav-item { display: flex; align-items: center; gap: 10px; padding: 6px 10px 6px 12px; border-radius: 6px; font-size: 13px; color: #3a3f47; font-weight: 500; position: relative; cursor: pointer; transition: background 0.1s ease, color 0.1s ease; }
+  .nav-item:hover { background: #eef0f3; color: #1f2328; }
+  .nav-item.active { background: #eef2ff; color: #4338ca; }
+  .nav-item.active::before { content: ''; position: absolute; left: 0; top: 6px; bottom: 6px; width: 3px; background: #4f46e5; border-radius: 0 2px 2px 0; }
+  .nav-item svg { width: 16px; height: 16px; flex-shrink: 0; }
+
+  /* ---- Pills / badges ---- */
+  .pill { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 500; line-height: 1.4; white-space: nowrap; }
+  .pill-top    { background: #eef2ff; color: #4338ca; }
+  .pill-second { background: #f1f5f9; color: #475569; }
+  .pill-reject { background: #fef2f2; color: #b1141c; }
+  .pill-empty  { background: #f6f7f9; color: #8b949e; }
+  .pill-built  { background: #ecfdf3; color: #1a7f37; }
+  .pill-applied { background: #fffbeb; color: #9a6700; }
+
+  /* ---- Table ---- */
+  .data-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; }
+  .data-table thead th {
+    position: sticky; top: 0; background: #fafafa; z-index: 2;
+    border-bottom: 1px solid #e5e7eb;
+    padding: 8px 12px; text-align: left; font-weight: 500; color: #57606a; font-size: 12px;
+    user-select: none;
+  }
+  .data-table thead th.sortable { cursor: pointer; }
+  .data-table thead th.sortable:hover { color: #1f2328; background: #f1f3f6; }
+  .data-table tbody td { padding: 10px 12px; border-bottom: 1px solid #f1f3f6; vertical-align: middle; color: #1f2328; }
+  .data-table tbody tr:hover td { background: #fafbfc; }
+  .data-table tbody tr.skel td { color: transparent; }
+  .data-table tbody tr.skel td > * { display: none; }
+  .data-table tbody tr.skel td::before { content: ''; display: block; height: 12px; border-radius: 4px; background: linear-gradient(90deg, #eef0f3 0%, #f6f7f9 50%, #eef0f3 100%); background-size: 200% 100%; animation: shimmer 1.4s linear infinite; }
+
+  @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+  /* ---- Toggle switch ---- */
+  .switch { position: relative; display: inline-block; width: 30px; height: 17px; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .switch .slider { position: absolute; cursor: pointer; inset: 0; background: #d1d5db; border-radius: 999px; transition: background 0.15s ease; }
+  .switch .slider::before { content: ''; position: absolute; height: 13px; width: 13px; left: 2px; top: 2px; background: #fff; border-radius: 50%; transition: transform 0.15s ease; box-shadow: 0 1px 2px rgba(0,0,0,0.15); }
+  .switch input:checked + .slider { background: #4f46e5; }
+  .switch input:checked + .slider::before { transform: translateX(13px); }
+  .switch input:disabled + .slider { opacity: 0.5; cursor: not-allowed; }
+
+  /* ---- Markdown previews ---- */
+  .md-prose { color: #1f2328; line-height: 1.65; }
+  .md-prose h1 { font-size: 1.4rem; font-weight: 700; margin: 0.8rem 0 0.5rem; letter-spacing: -0.01em; }
+  .md-prose h2 { font-size: 1.15rem; font-weight: 600; margin: 0.7rem 0 0.4rem; padding-bottom: 3px; border-bottom: 1px solid #e5e7eb; }
+  .md-prose h3 { font-size: 1rem; font-weight: 600; margin: 0.5rem 0 0.3rem; color: #3a3f47; }
+  .md-prose p { margin: 0.4rem 0; }
+  .md-prose ul { padding-left: 1.4rem; list-style: disc; margin: 0.4rem 0; }
+  .md-prose ol { padding-left: 1.4rem; list-style: decimal; margin: 0.4rem 0; }
+  .md-prose code { background: #f1f3f6; padding: 1px 5px; border-radius: 4px; font-size: 0.88em; font-family: 'JetBrains Mono', ui-monospace, monospace; }
+  .md-prose pre { background: #0f1419; color: #e6edf3; padding: 12px 14px; border-radius: 8px; overflow-x: auto; font-size: 12.5px; line-height: 1.55; }
+  .md-prose pre code { background: transparent; padding: 0; color: inherit; }
+  .md-prose a { color: #4f46e5; text-decoration: none; border-bottom: 1px solid rgba(79,70,229,0.3); }
+  .md-prose a:hover { border-bottom-color: #4f46e5; }
+  .md-prose hr { margin: 0.8rem 0; border: none; border-top: 1px solid #e5e7eb; }
+  .md-prose blockquote { border-left: 3px solid #e5e7eb; padding-left: 12px; color: #57606a; margin: 0.5rem 0; }
+  .jd-article { max-width: 760px; margin: 0 auto; }
+
+  /* ---- CodeMirror wrapper ---- */
+  .cm-wrapper { height: 100%; min-height: 0; background: #fff; }
+  .cm-wrapper .cm-editor { height: 100%; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; }
+  .cm-wrapper .cm-editor.cm-focused { outline: none; }
+  .cm-wrapper .cm-scroller { font-family: inherit; }
+  .cm-wrapper .cm-gutters { background: #fafbfc; border-right: 1px solid #f1f3f6; color: #a8b1bd; }
+
+  /* ---- Toasts ---- */
+  .toast { animation: slideUp 0.22s ease-out; }
+  @keyframes slideUp { from { transform: translateY(8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+  /* ---- Stat card ---- */
+  .stat-card { transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease; }
+  .stat-card:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,0.06), 0 1px 3px rgba(0,0,0,0.04); border-color: #d1d5db; }
+
+  /* ---- Skeleton block ---- */
+  .skel-block { background: linear-gradient(90deg, #eef0f3 0%, #f6f7f9 50%, #eef0f3 100%); background-size: 200% 100%; animation: shimmer 1.4s linear infinite; border-radius: 4px; height: 12px; }
+
+  /* ---- Modal ---- */
+  .modal-backdrop { animation: fadeIn 0.15s ease; }
+  .modal-panel { animation: scaleIn 0.15s ease; }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes scaleIn { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }
+
+  /* ---- Truncate w/ title tooltip ---- */
+  .truncate-cell { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* Vertical tab strip */
+  .vtab { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 6px; font-size: 13px; color: #57606a; cursor: pointer; transition: background 0.1s ease, color 0.1s ease; font-weight: 500; }
+  .vtab:hover { background: #eef0f3; color: #1f2328; }
+  .vtab.active { background: #eef2ff; color: #4338ca; }
+  .vtab svg { width: 14px; height: 14px; }
+
+  /* Scrollbar polish */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: #d8dde3; border-radius: 6px; border: 2px solid #fafafa; }
+  ::-webkit-scrollbar-thumb:hover { background: #b8c0c9; }
+  ::-webkit-scrollbar-track { background: transparent; }
+</style>
+</head>
+<body>
+<div x-data="jobsApp()" x-init="boot()" x-cloak class="min-h-screen">
+
+  <!-- ====================================================================== -->
+  <!-- Token prompt overlay                                                   -->
+  <!-- ====================================================================== -->
+  <template x-if="!token">
+    <div class="fixed inset-0 bg-ink-900/40 backdrop-blur-sm flex items-center justify-center z-50 modal-backdrop">
+      <div class="card modal-panel w-[420px] p-6">
+        <div class="flex items-center gap-2 mb-3">
+          <span class="inline-flex items-center justify-center w-8 h-8 rounded-md bg-brand-50 text-brand-700"><i data-lucide="lock"></i></span>
+          <h2 class="text-base font-semibold">Bearer token required</h2>
+        </div>
+        <p class="text-sm text-ink-600 mb-4">Paste your <code class="mono text-xs bg-surface-3 px-1.5 py-0.5 rounded">API_BEARER_TOKEN</code>. Stored only in this browser's localStorage.</p>
+        <input type="password" x-model="tokenInput" class="input mono"
+               placeholder="paste token..." @keydown.enter="saveToken()" />
+        <div class="flex justify-end mt-4">
+          <button @click="saveToken()" class="btn btn-primary">Save and continue</button>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <!-- ====================================================================== -->
+  <!-- Toast stack (bottom-right)                                             -->
+  <!-- ====================================================================== -->
+  <div class="fixed bottom-4 right-4 z-40 space-y-2 w-[360px] pointer-events-none">
+    <template x-for="t in toasts" :key="t.id">
+      <div class="toast card pointer-events-auto px-3 py-2.5 flex items-start gap-2.5"
+           :class="{
+             'border-l-4 border-l-danger': t.kind === 'error',
+             'border-l-4 border-l-ok':     t.kind === 'success',
+             'border-l-4 border-l-brand-600': t.kind === 'info'
+           }">
+        <span class="mt-0.5"
+              :class="{
+                'text-danger': t.kind === 'error',
+                'text-ok':     t.kind === 'success',
+                'text-brand-600': t.kind === 'info'
+              }">
+          <i :data-lucide="t.kind === 'error' ? 'circle-x' : (t.kind === 'success' ? 'circle-check' : 'info')"></i>
+        </span>
+        <div class="flex-1 text-sm text-ink-900 leading-snug" x-text="t.msg"></div>
+        <button @click="toasts = toasts.filter(x => x.id !== t.id)" class="btn-ghost btn btn-icon -m-1" aria-label="Dismiss">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+    </template>
+  </div>
+
+  <!-- ====================================================================== -->
+  <!-- Confirm modal                                                          -->
+  <!-- ====================================================================== -->
+  <template x-if="confirmModal">
+    <div class="fixed inset-0 bg-ink-900/40 backdrop-blur-sm flex items-center justify-center z-50 modal-backdrop" @click.self="confirmModal = null">
+      <div class="card modal-panel w-[440px] p-6">
+        <div class="flex items-start gap-3 mb-3">
+          <span class="inline-flex items-center justify-center w-8 h-8 rounded-md flex-shrink-0"
+                :class="confirmModal.danger ? 'bg-red-50 text-danger' : 'bg-brand-50 text-brand-700'">
+            <i :data-lucide="confirmModal.danger ? 'triangle-alert' : 'help-circle'"></i>
+          </span>
+          <div class="flex-1">
+            <h2 class="text-base font-semibold mb-1" x-text="confirmModal.title || 'Confirm'"></h2>
+            <p class="text-sm text-ink-600 whitespace-pre-wrap" x-text="confirmModal.message"></p>
+          </div>
+        </div>
+        <div class="flex justify-end gap-2 mt-5">
+          <button @click="confirmModal = null" class="btn btn-secondary">Cancel</button>
+          <button @click="confirmYes()" class="btn"
+                  :class="confirmModal.danger ? 'btn-danger' : 'btn-primary'"
+                  x-text="confirmModal.okLabel || 'Confirm'"></button>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <!-- ====================================================================== -->
+  <!-- Override-reason modal (AI false-reject correction)                     -->
+  <!-- ====================================================================== -->
+  <template x-if="overrideModal">
+    <div class="fixed inset-0 bg-ink-900/40 backdrop-blur-sm flex items-center justify-center z-50 modal-backdrop"
+         @click.self="resolveOverride(null)">
+      <div class="card modal-panel w-[480px] p-6">
+        <div class="flex items-start gap-3 mb-3">
+          <span class="inline-flex items-center justify-center w-8 h-8 rounded-md bg-brand-50 text-brand-700 flex-shrink-0">
+            <i data-lucide="sparkles"></i>
+          </span>
+          <div class="flex-1">
+            <h2 class="text-base font-semibold mb-0.5">Reclassify as <span x-text="overrideModal.newTier === 'Top Tier' ? 'Top' : 'Second'"></span>?</h2>
+            <p class="text-[12px] text-ink-600">
+              The AI originally rejected this. Tell it why you'd apply &mdash; helps the next run learn. Optional.
+            </p>
+          </div>
+        </div>
+        <div class="text-[11px] text-ink-500 mb-2 mono px-1">
+          <span x-text="overrideModal.row.title"></span> @ <span x-text="overrideModal.row.company"></span>
+        </div>
+        <textarea x-model="overrideModal.reason"
+                  @keydown.enter.prevent="resolveOverride({ reason: overrideModal.reason })"
+                  @keydown.escape.prevent="resolveOverride(null)"
+                  placeholder="e.g., frontier-AI co, on-site SF acceptable for the right comp"
+                  class="input w-full text-sm" rows="2"
+                  x-init="$nextTick(() => $el.focus())"></textarea>
+        <div class="text-[11px] text-ink-400 mt-1 mb-4">
+          Enter saves &middot; Esc cancels &middot; Blank reason saves the override flag without a note
+        </div>
+        <div class="flex justify-end gap-2">
+          <button @click="resolveOverride(null)" class="btn btn-secondary">Cancel</button>
+          <button @click="resolveOverride({ reason: overrideModal.reason })" class="btn btn-primary">
+            <i data-lucide="check" class="w-3.5 h-3.5"></i>
+            <span>Save</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <!-- ====================================================================== -->
+  <!-- Custom scrape modal                                                    -->
+  <!-- ====================================================================== -->
+  <template x-if="customScrapeModal">
+    <div class="fixed inset-0 bg-ink-900/40 backdrop-blur-sm flex items-center justify-center z-50 modal-backdrop" @click.self="customScrapeModal = false">
+      <div class="card modal-panel w-[560px] max-h-[88vh] overflow-y-auto">
+        <div class="px-5 py-4 border-b border-line flex items-center gap-3">
+          <span class="inline-flex items-center justify-center w-8 h-8 rounded-md bg-brand-50 text-brand-700 flex-shrink-0">
+            <i data-lucide="sliders-horizontal" class="w-4 h-4"></i>
+          </span>
+          <div>
+            <h2 class="text-base font-semibold">Custom scrape</h2>
+            <p class="text-[12px] text-ink-600">One-off LinkedIn pull. Tags rows with the run label so you can filter later.</p>
+          </div>
+        </div>
+        <form @submit.prevent="submitCustomScrape()" class="p-5 space-y-4">
+          <div>
+            <label class="block text-xs font-medium text-ink-700 mb-1">Keywords <span class="text-danger">*</span></label>
+            <input type="text" x-model="customScrapeForm.keywords" required
+                   placeholder="Data Engineer, Platform Engineer, Solutions Architect"
+                   class="w-full text-sm border border-line rounded-md px-3 py-2 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500" />
+            <p class="text-[11px] text-ink-400 mt-1">Comma-separated. Each keyword fires a separate LinkedIn search. Max 10 total searches across keywords x workplace types.</p>
+          </div>
+
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs font-medium text-ink-700 mb-1">Location <span class="text-danger">*</span></label>
+              <input type="text" x-model="customScrapeForm.location" required
+                     placeholder="United States"
+                     class="w-full text-sm border border-line rounded-md px-3 py-2 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500" />
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-ink-700 mb-1">Workplace type</label>
+              <select x-model="customScrapeForm.workplace_type"
+                      class="w-full text-sm border border-line rounded-md px-3 py-2 bg-white focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500">
+                <option value="any">Any (remote + hybrid)</option>
+                <option value="remote">Remote only</option>
+                <option value="hybrid">Hybrid only</option>
+                <option value="on-site">On-site (untested)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-3 gap-3">
+            <div>
+              <label class="block text-xs font-medium text-ink-700 mb-1">Salary min ($)</label>
+              <input type="number" min="0" step="5000" x-model.number="customScrapeForm.salary_min"
+                     class="w-full text-sm border border-line rounded-md px-3 py-2 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500" />
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-ink-700 mb-1">Date window</label>
+              <select x-model="customScrapeForm.date_window"
+                      class="w-full text-sm border border-line rounded-md px-3 py-2 bg-white focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500">
+                <option value="24h">Last 24h</option>
+                <option value="week">Last week</option>
+                <option value="month">Last month</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-ink-700 mb-1">Pages (1-5)</label>
+              <input type="number" min="1" max="5" step="1" x-model.number="customScrapeForm.pages"
+                     class="w-full text-sm border border-line rounded-md px-3 py-2 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500" />
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-ink-700 mb-1">Run label (optional)</label>
+            <input type="text" x-model="customScrapeForm.run_label" maxlength="80"
+                   placeholder="recruiter-Acme-AI, NYC-fintech-only"
+                   class="w-full text-sm border border-line rounded-md px-3 py-2 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500" />
+            <p class="text-[11px] text-ink-400 mt-1">Written to the run_label field on every row this scrape inserts.</p>
+          </div>
+
+          <div class="rounded-md bg-surface-2 border border-line px-3 py-2 text-[11px] text-ink-600 flex gap-2 items-start">
+            <i data-lucide="info" class="w-3.5 h-3.5 mt-0.5 flex-shrink-0"></i>
+            <span>Fires the custom-scrape n8n workflow. Uses real Apify credits (about 5 cents per 25 results). The webhook can take 1-5 minutes to return; refresh runs automatically when done.</span>
+          </div>
+
+          <div class="flex justify-end gap-2 pt-1">
+            <button type="button" @click="customScrapeModal = false" class="btn btn-secondary">Cancel</button>
+            <button type="submit" class="btn btn-primary" :disabled="busyTrigger.scraper_custom">
+              <svg x-show="busyTrigger.scraper_custom" class="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.5" opacity="0.25"/><path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="2.5" fill="none"/></svg>
+              <i x-show="!busyTrigger.scraper_custom" data-lucide="play" class="w-3.5 h-3.5"></i>
+              <span x-text="busyTrigger.scraper_custom ? 'Running...' : 'Run scrape'"></span>
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </template>
+
+  <!-- ====================================================================== -->
+  <!-- App shell: sidebar + main                                              -->
+  <!-- ====================================================================== -->
+  <div class="flex min-h-screen">
+
+    <!-- Sidebar -->
+    <aside class="bg-white border-r border-line flex-shrink-0 flex flex-col transition-all duration-150"
+           :class="sidebarCollapsed ? 'w-[60px]' : 'w-[240px]'"
+           style="position: sticky; top: 0; height: 100vh;">
+
+      <!-- Logo / app name -->
+      <div class="px-3 pt-4 pb-3 flex items-center gap-2.5 border-b border-line">
+        <div class="w-7 h-7 rounded-md bg-brand-600 flex items-center justify-center text-white flex-shrink-0">
+          <i data-lucide="briefcase" class="w-4 h-4"></i>
+        </div>
+        <div x-show="!sidebarCollapsed" class="flex-1 min-w-0">
+          <div class="text-sm font-semibold text-ink-900 leading-tight">Job Pipeline</div>
+          <div class="text-[11px] text-ink-400 mono leading-tight">v1.0.0</div>
+        </div>
+        <button @click="sidebarCollapsed = !sidebarCollapsed" class="btn btn-ghost btn-icon" :title="sidebarCollapsed ? 'Expand' : 'Collapse'">
+          <i :data-lucide="sidebarCollapsed ? 'chevron-right' : 'chevron-left'" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <!-- Nav -->
+      <nav class="flex-1 px-2 py-3 space-y-0.5 overflow-y-auto">
+        <template x-for="item in navItems" :key="item.key">
+          <a :href="'#' + item.key" class="nav-item" :class="screen === item.key ? 'active' : ''"
+             :title="sidebarCollapsed ? item.label : ''">
+            <i :data-lucide="item.icon"></i>
+            <span x-show="!sidebarCollapsed" x-text="item.label"></span>
+            <span x-show="!sidebarCollapsed && item.count != null"
+                  class="ml-auto text-[11px] mono px-1.5 py-0 rounded bg-surface-3 text-ink-600"
+                  x-text="item.count"></span>
+          </a>
+        </template>
+      </nav>
+
+      <!-- Footer: token status + settings -->
+      <div class="border-t border-line px-3 py-2.5 flex items-center gap-2 relative"
+           x-data="{ menu: false }" @click.outside="menu = false">
+        <span class="inline-block w-2 h-2 rounded-full" :class="token ? 'bg-ok' : 'bg-ink-300'"></span>
+        <span x-show="!sidebarCollapsed" class="text-[11px] text-ink-600 flex-1 truncate" x-text="token ? 'Token loaded' : 'No token'"></span>
+        <button @click="menu = !menu" class="btn btn-ghost btn-icon" title="Settings">
+          <i data-lucide="settings" class="w-4 h-4"></i>
+        </button>
+        <div x-show="menu" class="absolute bottom-12 left-2 right-2 card shadow-pop p-1 z-30">
+          <button @click="setN8nBase(); menu = false" class="w-full text-left px-2 py-1.5 text-xs rounded hover:bg-surface-3 flex items-center gap-2">
+            <i data-lucide="workflow" class="w-3.5 h-3.5"></i> Set n8n URL
+          </button>
+          <button @click="clearToken(); menu = false" class="w-full text-left px-2 py-1.5 text-xs rounded hover:bg-surface-3 flex items-center gap-2">
+            <i data-lucide="log-out" class="w-3.5 h-3.5"></i> Clear token
+          </button>
+          <div class="px-2 py-1.5 text-[10px] text-ink-400 mono">Job Pipeline v1.0.0</div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main column -->
+    <div class="flex-1 flex flex-col min-w-0">
+
+      <!-- Top bar -->
+      <header class="bg-white border-b border-line px-5 h-[48px] flex items-center gap-3 sticky top-0 z-20">
+        <!-- Breadcrumb -->
+        <div class="flex items-center gap-1.5 text-sm min-w-0">
+          <span class="text-ink-600" x-text="breadcrumb.section"></span>
+          <template x-if="breadcrumb.item">
+            <span class="text-ink-400">/</span>
+          </template>
+          <span x-show="breadcrumb.item" class="text-ink-900 font-medium truncate" x-text="breadcrumb.item"></span>
+        </div>
+
+        <!-- Right side -->
+        <div class="ml-auto flex items-center gap-1.5">
+          <span x-show="loading" class="text-xs text-ink-400 mr-2 flex items-center gap-1">
+            <svg class="animate-spin h-3 w-3" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.5" opacity="0.25"/><path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="2.5" fill="none"/></svg>
+            loading
+          </span>
+          <span x-show="lastRefreshed && !loading" class="text-[11px] text-ink-400 mono mr-1" x-text="'updated ' + lastRefreshed"></span>
+
+          <!-- Webhook triggers (icon-only) -->
+          <button @click="runTrigger('scraper_scheduled')" :disabled="busyTrigger.scraper_scheduled"
+                  class="btn btn-ghost btn-icon" title="Run the scheduled scrape now (LinkedIn via Apify)">
+            <svg x-show="busyTrigger.scraper_scheduled" class="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.5" opacity="0.25"/><path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="2.5" fill="none"/></svg>
+            <i x-show="!busyTrigger.scraper_scheduled" data-lucide="radar"></i>
+          </button>
+          <button @click="runBuildQueue()" :disabled="busyTrigger.build_queue"
+                  class="btn btn-ghost btn-icon" title="Run build queue ($ Anthropic API). Confirms before firing.">
+            <svg x-show="busyTrigger.build_queue" class="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.5" opacity="0.25"/><path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="2.5" fill="none"/></svg>
+            <i x-show="!busyTrigger.build_queue" data-lucide="hammer"></i>
+          </button>
+          <button @click="openCustomScrape()" :disabled="busyTrigger.scraper_custom"
+                  class="btn btn-ghost btn-icon" title="Custom scrape (form-driven, LinkedIn Apify)">
+            <svg x-show="busyTrigger.scraper_custom" class="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.5" opacity="0.25"/><path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="2.5" fill="none"/></svg>
+            <i x-show="!busyTrigger.scraper_custom" data-lucide="sliders-horizontal"></i>
+          </button>
+
+          <span class="w-px h-5 bg-line mx-1"></span>
+
+          <button @click="refreshAll()" class="btn btn-secondary btn-sm" title="Refresh data">
+            <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+            <span>Refresh</span>
+          </button>
+        </div>
+      </header>
+
+      <!-- =========================================================== -->
+      <!-- Screen 1: Dashboard                                         -->
+      <!-- =========================================================== -->
+      <main x-show="screen === 'dashboard'" class="p-6 space-y-6">
+        <div>
+          <h1 class="text-xl font-semibold tracking-tight">Dashboard</h1>
+          <p class="text-sm text-ink-600 mt-0.5">Pipeline snapshot. Numbers reflect live database state.</p>
+        </div>
+
+        <!-- Stat grid -->
+        <div class="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5">
+          <template x-for="card in statCards" :key="card.key">
+            <a :href="card.href || '#dashboard'" class="card stat-card p-4 flex flex-col gap-1.5 relative">
+              <div class="flex items-center justify-between">
+                <span class="text-[11px] uppercase tracking-wide text-ink-400 font-medium" x-text="card.label"></span>
+                <span class="text-ink-300"><i :data-lucide="card.icon" class="w-3.5 h-3.5"></i></span>
+              </div>
+              <template x-if="!statsLoading">
+                <div class="text-2xl font-semibold tracking-tight" x-text="card.value ?? '-'"></div>
+              </template>
+              <template x-if="statsLoading">
+                <div class="skel-block w-16 h-7 mt-0.5"></div>
+              </template>
+              <div class="text-[11px] text-ink-400" x-text="card.sub || ''"></div>
+            </a>
+          </template>
+        </div>
+
+        <!-- Recent activity -->
+        <div class="card">
+          <div class="px-4 py-3 border-b border-line flex items-center">
+            <h2 class="text-sm font-semibold">Recent activity</h2>
+            <span class="ml-auto text-[11px] text-ink-400">Last 20 events</span>
+          </div>
+          <div class="p-1">
+            <template x-if="!statsLoading && recentActivity.length === 0">
+              <div class="px-4 py-8 text-center text-sm text-ink-400">
+                <i data-lucide="inbox" class="w-6 h-6 mx-auto mb-2 text-ink-300"></i>
+                <div>No recent activity</div>
+                <div class="text-[11px] mt-1">Builds and tier changes appear here.</div>
+              </div>
+            </template>
+            <template x-if="statsLoading">
+              <div class="px-4 py-4 space-y-2">
+                <template x-for="i in 4" :key="i"><div class="skel-block h-4 w-full"></div></template>
+              </div>
+            </template>
+            <template x-for="ev in recentActivity" :key="ev.id">
+              <a :href="ev.href || '#dashboard'"
+                 class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-surface-2 text-sm">
+                <span class="text-ink-400 flex-shrink-0"><i :data-lucide="ev.icon"></i></span>
+                <span class="flex-1 truncate" x-text="ev.label"></span>
+                <span class="text-[11px] text-ink-400 mono flex-shrink-0" x-text="ev.when"></span>
+              </a>
+            </template>
+          </div>
+        </div>
+
+        <!-- Quick actions -->
+        <div class="card p-4">
+          <h2 class="text-sm font-semibold mb-3">Quick actions</h2>
+          <div class="flex flex-wrap gap-2">
+            <button @click="runTrigger('scraper_scheduled')" :disabled="busyTrigger.scraper_scheduled" class="btn btn-secondary">
+              <i data-lucide="radar" class="w-4 h-4"></i>
+              <span>Run scheduled scrape</span>
+            </button>
+            <button @click="runBuildQueue()" :disabled="busyTrigger.build_queue" class="btn btn-primary">
+              <i data-lucide="hammer" class="w-4 h-4"></i>
+              <span>Run build queue</span>
+            </button>
+            <button @click="refreshAll()" class="btn btn-secondary">
+              <i data-lucide="refresh-cw" class="w-4 h-4"></i>
+              <span>Refresh all</span>
+            </button>
+          </div>
+        </div>
+      </main>
+
+      <!-- =========================================================== -->
+      <!-- Screens 2-6: List screens (Triage, Queue, Build, Built, Applied) -->
+      <!-- All share the same table component with view-locked filters. -->
+      <!-- =========================================================== -->
+      <main x-show="isListScreen" class="p-6 space-y-4">
+        <div class="flex items-baseline justify-between">
+          <div>
+            <h1 class="text-xl font-semibold tracking-tight" x-text="currentView?.title"></h1>
+            <p class="text-sm text-ink-600 mt-0.5" x-text="currentView?.subtitle"></p>
+          </div>
+        </div>
+
+        <!-- Filter bar -->
+        <div class="card px-3 py-2 flex flex-wrap items-end gap-3">
+          <template x-if="screen === 'queue'">
+            <div class="flex flex-wrap items-end gap-3">
+              <div>
+                <label class="text-[11px] uppercase tracking-wide text-ink-400 font-medium block mb-1">Tier</label>
+                <select x-model="filterTier" @change="loadJobs()" class="select-input input-sm">
+                  <option value="all">All</option>
+                  <option value="unsorted">Unsorted (no tier)</option>
+                  <option value="Top Tier">Top Tier</option>
+                  <option value="Second Choice">Second Choice</option>
+                  <option value="Reject">Reject</option>
+                </select>
+              </div>
+              <div>
+                <label class="text-[11px] uppercase tracking-wide text-ink-400 font-medium block mb-1">Status</label>
+                <select x-model="filterStatus" @change="loadJobs()" class="select-input input-sm">
+                  <option value="all">All</option>
+                  <option value="new">New (24h)</option>
+                  <option value="built">Built</option>
+                  <option value="applied">Applied</option>
+                </select>
+              </div>
+              <div>
+                <label class="text-[11px] uppercase tracking-wide text-ink-400 font-medium block mb-1">Package</label>
+                <select x-model="filterPackage" @change="loadJobs()" class="select-input input-sm">
+                  <option value="all">All</option>
+                  <option value="yes">Has package</option>
+                  <option value="no">No package</option>
+                </select>
+              </div>
+            </div>
+          </template>
+
+          <template x-if="screen === 'applied'">
+            <div>
+              <label class="text-[11px] uppercase tracking-wide text-ink-400 font-medium block mb-1">Stage</label>
+              <select x-model="filterStage" @change="loadJobs()" class="select-input input-sm">
+                <option value="all">All</option>
+                <option value="Applied">Applied</option>
+                <option value="Heard Back">Heard Back</option>
+                <option value="Screen">Screen</option>
+                <option value="Interview">Interview</option>
+                <option value="Offer">Offer</option>
+                <option value="Rejected">Rejected</option>
+                <option value="Ghosted">Ghosted</option>
+              </select>
+            </div>
+          </template>
+
+          <template x-if="screen === 'queue'">
+            <div class="flex-1 min-w-[200px] max-w-md">
+              <label class="text-[11px] uppercase tracking-wide text-ink-400 font-medium block mb-1">Search</label>
+              <div class="relative">
+                <i data-lucide="search" class="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-400 pointer-events-none"></i>
+                <input type="search" x-model="searchQuery" placeholder="title, company, location..."
+                       class="input input-sm w-full pl-8" />
+                <button x-show="searchQuery" @click="searchQuery = ''"
+                        class="absolute right-2 top-1/2 -translate-y-1/2 text-ink-400 hover:text-ink-700"
+                        title="Clear search" type="button">
+                  <i data-lucide="x" class="w-3.5 h-3.5"></i>
+                </button>
+              </div>
+            </div>
+          </template>
+
+          <div>
+            <label class="text-[11px] uppercase tracking-wide text-ink-400 font-medium block mb-1">Limit</label>
+            <input type="number" x-model.number="filterLimit" min="1" max="500" @change="loadJobs()"
+                   class="input input-sm w-20" />
+          </div>
+
+          <template x-if="screen === 'build-queue'">
+            <button @click="confirmRunBuildQueue()" class="btn btn-primary btn-sm ml-2">
+              <i data-lucide="hammer" class="w-3.5 h-3.5"></i>
+              <span>Run all</span>
+            </button>
+          </template>
+
+          <button @click="openAddJob()" class="btn btn-primary btn-sm ml-2"
+                  title="Manually add a job (off-platform applications)">
+            <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+            <span>Add job</span>
+          </button>
+
+          <button @click="confirmPurgeRejects()" :disabled="busyPurge"
+                  class="btn btn-secondary btn-sm ml-2 hover:text-danger" title="Hard-delete every row where Tier = Reject (irreversible)">
+            <svg x-show="busyPurge" class="animate-spin h-3.5 w-3.5 text-danger" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.5" opacity="0.25"/><path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="2.5" fill="none"/></svg>
+            <i x-show="!busyPurge" data-lucide="trash" class="w-3.5 h-3.5"></i>
+            <span>Purge rejects</span>
+          </button>
+
+          <div class="ml-auto text-xs text-ink-400 mono"
+               x-text="searchQuery ? (filteredJobs.length + ' / ' + jobs.length + ' rows') : ((jobs.length || 0) + ' rows')"></div>
+        </div>
+
+        <!-- Table -->
+        <div class="card overflow-hidden">
+          <div class="overflow-x-auto" style="max-height: calc(100vh - 270px);">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th class="sortable" @click="toggleSort('title')">
+                    <span class="inline-flex items-center gap-1">Title <span x-text="sortIndicator('title')"></span></span>
+                  </th>
+                  <th class="sortable" @click="toggleSort('company')">
+                    <span class="inline-flex items-center gap-1">Company <span x-text="sortIndicator('company')"></span></span>
+                  </th>
+                  <th class="sortable" @click="toggleSort('location')">
+                    <span class="inline-flex items-center gap-1">Location <span x-text="sortIndicator('location')"></span></span>
+                  </th>
+                  <th class="sortable" @click="toggleSort('created_at')">
+                    <span class="inline-flex items-center gap-1">Added <span x-text="sortIndicator('created_at')"></span></span>
+                  </th>
+                  <th class="sortable text-right" @click="toggleSort('score')">
+                    <span class="inline-flex items-center gap-1 justify-end w-full">Score <span x-text="sortIndicator('score')"></span></span>
+                  </th>
+                  <th class="sortable text-right" @click="toggleSort('salary')">
+                    <span class="inline-flex items-center gap-1 justify-end w-full">Salary <span x-text="sortIndicator('salary')"></span></span>
+                  </th>
+                  <th class="sortable" @click="toggleSort('tier')">
+                    <span class="inline-flex items-center gap-1">Tier <span x-text="sortIndicator('tier')"></span></span>
+                  </th>
+                  <th class="text-center sortable" @click="toggleSort('build_package')">
+                    <span class="inline-flex items-center gap-1 justify-center w-full">Build <span x-text="sortIndicator('build_package')"></span></span>
+                  </th>
+                  <th class="text-center sortable" @click="toggleSort('application_package_created')">
+                    <span class="inline-flex items-center gap-1 justify-center w-full">Built <span x-text="sortIndicator('application_package_created')"></span></span>
+                  </th>
+                  <th class="text-center sortable" @click="toggleSort('status')">
+                    <span class="inline-flex items-center gap-1 justify-center w-full">Applied <span x-text="sortIndicator('status')"></span></span>
+                  </th>
+                  <th class="sortable" @click="toggleSort('stage')">
+                    <span class="inline-flex items-center gap-1">Stage <span x-text="sortIndicator('stage')"></span></span>
+                  </th>
+                  <th class="text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-if="loading && jobs.length === 0">
+                  <template x-for="i in 6" :key="i">
+                    <tr class="skel">
+                      <td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>
+                    </tr>
+                  </template>
+                </template>
+
+                <template x-for="row in sortedJobs" :key="row.record_id">
+                  <tr>
+                    <td>
+                      <button @click="openJD(row)" class="text-left hover:text-brand-600 font-medium flex items-start gap-1.5 group"
+                              :title="row.title">
+                        <span class="truncate-cell" x-text="row.title"></span>
+                        <span x-show="row.ai_override" class="text-warn flex-shrink-0 mt-0.5"
+                              :title="row.override_reason ? 'Reclassified: ' + row.override_reason : 'You reclassified this from Reject'">
+                          <i data-lucide="flag" class="w-3 h-3"></i>
+                        </span>
+                      </button>
+                    </td>
+                    <td class="text-ink-700" x-text="row.company"></td>
+                    <td class="text-ink-600 text-[12.5px]" x-text="row.location"></td>
+                    <td class="text-ink-600 text-[12.5px] mono whitespace-nowrap" :title="row.created_at" x-text="formatDate(row.created_at)"></td>
+                    <td class="text-right mono tabular-nums" x-text="row.score ?? ''"></td>
+                    <td class="text-right mono tabular-nums text-ink-700" x-text="formatSalary(row.sal_min, row.sal_max)"></td>
+                    <td>
+                      <select :value="row.tier"
+                              @change="handleTierChange(row, $event)"
+                              class="select-input input-sm" style="padding: 2px 6px; font-size: 11px;">
+                        <option value="">--</option>
+                        <option value="Top Tier">Top</option>
+                        <option value="Second Choice">Second</option>
+                        <option value="Reject">Reject</option>
+                      </select>
+                    </td>
+                    <td class="text-center">
+                      <label class="switch">
+                        <input type="checkbox" :checked="row.build_package"
+                               @change="patchJob(row, { build_package: $event.target.checked })" />
+                        <span class="slider"></span>
+                      </label>
+                    </td>
+                    <td class="text-center">
+                      <span x-show="row.application_package_created" class="text-ok" title="Package built">
+                        <i data-lucide="check-circle-2" class="w-4 h-4 inline-block"></i>
+                      </span>
+                      <span x-show="!row.application_package_created" class="text-ink-300">-</span>
+                    </td>
+                    <td class="text-center">
+                      <label class="switch" :title="row.status === 'Applied' ? 'Applied (click to unmark)' : 'Mark as applied'">
+                        <input type="checkbox" :checked="row.status === 'Applied'"
+                               @change="toggleApplied(row, $event.target.checked)" />
+                        <span class="slider"></span>
+                      </label>
+                    </td>
+                    <td>
+                      <select x-show="row.status === 'Applied'" :value="row.stage || 'Applied'"
+                              @change="handleStageChange(row, $event)"
+                              class="select-input input-sm" style="padding: 2px 6px; font-size: 11px;">
+                        <option value="Applied">Applied</option>
+                        <option value="Heard Back">Heard Back</option>
+                        <option value="Screen">Screen</option>
+                        <option value="Interview">Interview</option>
+                        <option value="Offer">Offer</option>
+                        <option value="Rejected">Rejected</option>
+                        <option value="Ghosted">Ghosted</option>
+                      </select>
+                      <span x-show="row.status !== 'Applied'" class="text-ink-300">-</span>
+                    </td>
+                    <td>
+                      <div class="flex items-center justify-end gap-0.5">
+                        <button @click="openJD(row)" title="View job description" class="btn btn-ghost btn-icon">
+                          <i data-lucide="eye" class="w-4 h-4"></i>
+                        </button>
+                        </button>
+                        <button x-show="row.application_package_created" @click="openPackage(row)" title="Open package" class="btn btn-ghost btn-icon">
+                          <i data-lucide="folder-open" class="w-4 h-4"></i>
+                        </button>
+                        <button x-show="!row.application_package_created && row.build_package"
+                                @click="buildOne(row)"
+                                :disabled="busyBuild === row.record_id"
+                                title="Build now ($)" class="btn btn-ghost btn-icon">
+                          <svg x-show="busyBuild === row.record_id" class="animate-spin h-4 w-4 text-warn" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.5" opacity="0.25"/><path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="2.5" fill="none"/></svg>
+                          <i x-show="busyBuild !== row.record_id" data-lucide="hammer" class="w-4 h-4"></i>
+                        </button>
+                        </button>
+                        <a :href="row.url" target="_blank" rel="noopener" title="Open posting" class="btn btn-ghost btn-icon">
+                          <i data-lucide="external-link" class="w-4 h-4"></i>
+                        </a>
+                        <button @click="confirmDeleteJob(row)"
+                                :disabled="busyDelete === row.record_id"
+                                title="Delete this row (permanent)"
+                                class="btn btn-ghost btn-icon hover:text-danger">
+                          <svg x-show="busyDelete === row.record_id" class="animate-spin h-4 w-4 text-danger" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.5" opacity="0.25"/><path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="2.5" fill="none"/></svg>
+                          <i x-show="busyDelete !== row.record_id" data-lucide="trash-2" class="w-4 h-4"></i>
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                </template>
+
+                <template x-if="!loading && filteredJobs.length === 0">
+                  <tr>
+                    <td colspan="12" class="text-center py-14">
+                      <div class="inline-flex flex-col items-center gap-2 text-ink-400">
+                        <i data-lucide="inbox" class="w-8 h-8 text-ink-300"></i>
+                        <div class="text-sm font-medium text-ink-600"
+                             x-text="searchQuery ? 'No jobs match your search' : 'No jobs match these filters'"></div>
+                        <div class="text-[11px]"
+                             x-text="searchQuery ? 'Try a shorter query or clear the search box.' : 'Try adjusting tier or status, or run a scraper.'"></div>
+                      </div>
+                    </td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </main>
+
+      <!-- =========================================================== -->
+      <!-- Screen 7: Detail (package editor)                           -->
+      <!-- =========================================================== -->
+      <main x-show="screen === 'detail'" class="flex flex-col" style="height: calc(100vh - 48px);">
+        <!-- Detail header -->
+        <div class="bg-white border-b border-line px-5 py-2.5 flex items-center gap-3 flex-shrink-0">
+          <button @click="goBack()" class="btn btn-ghost btn-sm" title="Back (Esc)">
+            <i data-lucide="arrow-left" class="w-4 h-4"></i>
+            <span>Back</span>
+          </button>
+          <div class="min-w-0 flex-1">
+            <div class="text-sm font-semibold truncate" x-text="(detail?.title || '') + ' @ ' + (detail?.company || '')"></div>
+            <div class="text-[11px] text-ink-400 truncate">
+              <span x-text="detail?.location || '-'"></span>
+              <span x-show="detail?.workplace_type"> &middot; <span x-text="detail?.workplace_type"></span></span>
+              <span> &middot; <span x-text="formatSalary(detail?.sal_min, detail?.sal_max) || 'salary n/a'"></span></span>
+            </div>
+          </div>
+          <span class="text-[11px] text-ink-400 mono" x-show="saveStateText" x-text="saveStateText"></span>
+
+          <span x-show="pkg?.pdf_stale" class="pill pill-applied" title="resume.md is newer than resume.pdf">
+            <span class="inline-block w-1.5 h-1.5 rounded-full bg-warn"></span> PDF stale
+          </span>
+          <button @click="renderPdf()" :disabled="busyRender" class="btn btn-secondary btn-sm" title="Render PDF (Ctrl+Shift+R)">
+            <svg x-show="busyRender" class="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.5" opacity="0.25"/><path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="2.5" fill="none"/></svg>
+            <i x-show="!busyRender" data-lucide="file-output" class="w-3.5 h-3.5"></i>
+            <span x-text="busyRender ? 'Rendering...' : 'Render PDF'"></span>
+          </button>
+          <button @click="confirmMarkApplied()"
+                  :disabled="!detail || detail.status === 'Applied'"
+                  class="btn btn-primary btn-sm">
+            <i data-lucide="send" class="w-3.5 h-3.5"></i>
+            <span x-text="detail?.status === 'Applied' ? 'Applied' : 'Mark applied'"></span>
+          </button>
+          <a :href="detail?.url || '#'" target="_blank" rel="noopener" class="btn btn-ghost btn-sm">
+            <i data-lucide="external-link" class="w-3.5 h-3.5"></i>
+            <span>Open job</span>
+          </a>
+        </div>
+
+        <!-- Three-column layout -->
+        <div class="flex-1 flex min-h-0">
+
+          <!-- Left rail: vertical tab strip -->
+          <div class="w-[200px] bg-surface-2 border-r border-line p-2 space-y-0.5 flex-shrink-0 overflow-y-auto">
+            <template x-for="(t, i) in visibleTabs" :key="t.key">
+              <button @click="switchTab(t.key)" class="vtab w-full justify-start"
+                      :class="activeTab === t.key ? 'active' : ''"
+                      :title="t.label + ' (' + (i+1) + ')'">
+                <i :data-lucide="t.icon"></i>
+                <span class="flex-1 text-left" x-text="t.label"></span>
+                <span x-show="t.key === 'resume' && pkg?.pdf_stale" class="w-1.5 h-1.5 rounded-full bg-warn"
+                      title="resume.md newer than resume.pdf"></span>
+                <span x-show="dirty[t.key]" class="text-warn text-xs">*</span>
+              </button>
+            </template>
+            <div class="border-t border-line my-2"></div>
+            <button @click="rightPanel = !rightPanel" class="vtab w-full justify-start">
+              <i :data-lucide="rightPanel ? 'panel-right-close' : 'panel-right-open'"></i>
+              <span class="flex-1 text-left" x-text="rightPanel ? 'Hide preview' : 'Show preview'"></span>
+            </button>
+          </div>
+
+          <!-- Middle: editor / JD render -->
+          <div class="flex-1 flex flex-col min-w-0 bg-white">
+
+            <!-- JD tab content -->
+            <template x-if="activeTab === 'jd'">
+              <div class="flex-1 flex flex-col min-h-0">
+                <div class="border-b border-line px-5 py-2 flex items-center gap-3 flex-shrink-0">
+                  <span class="pill"
+                        :class="{
+                          'pill-top': detail?.tier === 'Top Tier',
+                          'pill-second': detail?.tier === 'Second Choice',
+                          'pill-reject': detail?.tier === 'Reject',
+                          'pill-empty': !detail?.tier
+                        }"
+                        x-text="detail?.tier || 'unsorted'"></span>
+                  <span class="text-xs text-ink-600 mono" x-text="'Score: ' + (detail?.score ?? '-')"></span>
+                  <button @click="showRubric = !showRubric" class="btn btn-ghost btn-sm ml-auto">
+                    <i :data-lucide="showRubric ? 'chevron-up' : 'chevron-down'" class="w-3.5 h-3.5"></i>
+                    <span x-text="showRubric ? 'Hide rubric' : 'Show rubric'"></span>
+                  </button>
+                </div>
+                <div x-show="showRubric" class="border-b border-line bg-surface-2 px-5 py-3 max-h-52 overflow-y-auto flex-shrink-0">
+                  <div class="text-[11px] uppercase tracking-wide text-ink-400 font-medium mb-1.5">Rubric breakdown</div>
+                  <pre class="whitespace-pre-wrap text-xs text-ink-700 leading-relaxed mono" x-text="detail?.breakdown || '(no breakdown on file)'"></pre>
+                </div>
+                <div class="flex-1 overflow-y-auto p-8">
+                  <template x-if="renderedJD">
+                    <div class="jd-article md-prose" x-html="renderedJD"></div>
+                  </template>
+                  <template x-if="!renderedJD">
+                    <div class="jd-article text-ink-400 italic text-sm">No job description on file. Open on LinkedIn to view.</div>
+                  </template>
+                </div>
+              </div>
+            </template>
+
+            <!-- Editor tabs -->
+            <template x-if="activeTab !== 'jd'">
+              <div class="flex-1 flex flex-col min-h-0">
+                <div class="flex-1 cm-wrapper min-h-0" id="editorRoot"></div>
+                <div class="border-t border-line bg-white px-4 py-1.5 flex items-center gap-3 text-xs flex-shrink-0">
+                  <button @click="saveCurrent()"
+                          :disabled="!dirty[activeTab] || busySave"
+                          class="btn btn-sm"
+                          :class="dirty[activeTab] ? 'btn-primary' : 'btn-secondary'">
+                    <i data-lucide="save" class="w-3.5 h-3.5"></i>
+                    <span x-text="busySave ? 'Saving...' : 'Save'"></span>
+                    <span class="text-[10px] opacity-70 mono ml-1" x-show="dirty[activeTab]">Ctrl+S</span>
+                  </button>
+                  <span x-show="dirty[activeTab]" class="text-warn">Unsaved changes</span>
+                  <span x-show="!dirty[activeTab] && lastSavedAgo" class="text-ink-400" x-text="'Saved ' + lastSavedAgo"></span>
+                  <span class="ml-auto text-ink-400 mono"
+                        x-text="(tabFilename(activeTab) || '-') + ' • ' + (editorState[activeTab]?.length || 0) + ' chars'"></span>
+                </div>
+              </div>
+            </template>
+          </div>
+
+          <!-- Right rail: PDF preview / markdown preview -->
+          <div x-show="rightPanel"
+               class="border-l border-line bg-surface-2 flex flex-col flex-shrink-0"
+               style="width: 420px;">
+            <div class="border-b border-line px-4 py-2 flex items-center gap-2 bg-white">
+              <span class="text-[11px] uppercase tracking-wide text-ink-400 font-medium">
+                <span x-show="activeTab === 'resume' && pkg?.has_resume_pdf">PDF preview</span>
+                <span x-show="!(activeTab === 'resume' && pkg?.has_resume_pdf)">Markdown preview</span>
+              </span>
+              <span x-show="activeTab === 'resume' && pkg?.pdf_stale" class="text-[10px] text-warn">(stale)</span>
+              <button x-show="activeTab === 'resume' && pkg?.has_resume_pdf" @click="reloadPdf()" class="btn btn-ghost btn-icon ml-auto" title="Reload PDF">
+                <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+              </button>
+            </div>
+            <div class="flex-1 overflow-y-auto min-h-0">
+              <template x-if="activeTab === 'resume' && pkg?.has_resume_pdf && pdfBlobUrl">
+                <iframe :src="pdfBlobUrl" class="w-full h-full bg-white" style="border: 0;"></iframe>
+              </template>
+              <template x-if="!(activeTab === 'resume' && pkg?.has_resume_pdf && pdfBlobUrl)">
+                <div class="p-5">
+                  <template x-if="activeTab === 'jd'">
+                    <div class="text-xs text-ink-400 italic">Open an editor tab to see a live markdown preview here.</div>
+                  </template>
+                  <template x-if="activeTab !== 'jd'">
+                    <div class="md-prose text-sm" x-html="renderedPreview"></div>
+                  </template>
+                </div>
+              </template>
+            </div>
+          </div>
+        </div>
+      </main>
+
+      <!-- =========================================================== -->
+      <!-- JD modal (from list screens)                                -->
+      <!-- =========================================================== -->
+      <!-- Add-job modal -->
+      <template x-if="addModal">
+        <div class="fixed inset-0 bg-ink-900/40 backdrop-blur-sm flex items-start justify-center z-40 py-10 px-4 overflow-y-auto modal-backdrop"
+             @click.self="addModal = false">
+          <div class="card modal-panel w-full max-w-2xl">
+            <div class="border-b border-line px-5 py-3 flex items-center gap-3">
+              <div class="min-w-0 flex-1">
+                <div class="font-semibold text-sm">Add a job manually</div>
+                <div class="text-xs text-ink-600">For applications you found off-platform (company sites, referrals) that the scraper never sees.</div>
+              </div>
+              <button @click="addModal = false" class="btn btn-ghost btn-icon" title="Close">
+                <i data-lucide="x" class="w-4 h-4"></i>
+              </button>
+            </div>
+            <div class="p-5 max-h-[72vh] overflow-y-auto space-y-3">
+              <div class="grid grid-cols-2 gap-3">
+                <div>
+                  <label class="text-[11px] uppercase tracking-wide text-ink-400 font-medium block mb-1">Title *</label>
+                  <input x-model="addForm.title" class="input input-sm w-full" placeholder="Platform Engineer" />
+                </div>
+                <div>
+                  <label class="text-[11px] uppercase tracking-wide text-ink-400 font-medium block mb-1">Company *</label>
+                  <input x-model="addForm.company" class="input input-sm w-full" placeholder="Acme Robotics" />
+                </div>
+              </div>
+              <div>
+                <label class="text-[11px] uppercase tracking-wide text-ink-400 font-medium block mb-1">Job URL</label>
+                <input x-model="addForm.source_url" class="input input-sm w-full" placeholder="https://jobs.example.com/..." />
+              </div>
+              <div class="grid grid-cols-2 gap-3">
+                <div>
+                  <label class="text-[11px] uppercase tracking-wide text-ink-400 font-medium block mb-1">Location</label>
+                  <input x-model="addForm.location" class="input input-sm w-full" placeholder="New York, NY" />
+                </div>
+                <div>
+                  <label class="text-[11px] uppercase tracking-wide text-ink-400 font-medium block mb-1">Workplace</label>
+                  <select x-model="addForm.workplace" class="select-input input-sm w-full">
+                    <option value="">--</option>
+                    <option value="Remote">Remote</option>
+                    <option value="Hybrid">Hybrid</option>
+                    <option value="On-site">On-site</option>
+                  </select>
+                </div>
+              </div>
+              <div class="grid grid-cols-3 gap-3">
+                <div>
+                  <label class="text-[11px] uppercase tracking-wide text-ink-400 font-medium block mb-1">Tier</label>
+                  <select x-model="addForm.tier" class="select-input input-sm w-full">
+                    <option value="">--</option>
+                    <option value="Top Tier">Top Tier</option>
+                    <option value="Second Choice">Second Choice</option>
+                    <option value="Reject">Reject</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="text-[11px] uppercase tracking-wide text-ink-400 font-medium block mb-1">Status</label>
+                  <select x-model="addForm.status" class="select-input input-sm w-full">
+                    <option value="New">New</option>
+                    <option value="Applied">Applied</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="text-[11px] uppercase tracking-wide text-ink-400 font-medium block mb-1">Stage</label>
+                  <select x-model="addForm.stage" :disabled="addForm.status !== 'Applied'" class="select-input input-sm w-full">
+                    <option value="">--</option>
+                    <option value="Applied">Applied</option>
+                    <option value="Heard Back">Heard Back</option>
+                    <option value="Screen">Screen</option>
+                    <option value="Interview">Interview</option>
+                    <option value="Offer">Offer</option>
+                    <option value="Rejected">Rejected</option>
+                    <option value="Ghosted">Ghosted</option>
+                  </select>
+                </div>
+              </div>
+              <div class="grid grid-cols-2 gap-3">
+                <div>
+                  <label class="text-[11px] uppercase tracking-wide text-ink-400 font-medium block mb-1">Salary min</label>
+                  <input type="number" x-model.number="addForm.salary_min" class="input input-sm w-full" placeholder="165000" />
+                </div>
+                <div>
+                  <label class="text-[11px] uppercase tracking-wide text-ink-400 font-medium block mb-1">Salary max</label>
+                  <input type="number" x-model.number="addForm.salary_max" class="input input-sm w-full" placeholder="315000" />
+                </div>
+              </div>
+              <div>
+                <label class="text-[11px] uppercase tracking-wide text-ink-400 font-medium block mb-1">Description (for interview prep)</label>
+                <textarea x-model="addForm.description" rows="6" class="input input-sm w-full" placeholder="Paste the job description here so Generate prep has something to work with."></textarea>
+              </div>
+            </div>
+            <div class="border-t border-line px-5 py-3 flex items-center gap-3">
+              <label class="flex items-center gap-2 text-xs text-ink-700 cursor-pointer select-none">
+                <input type="checkbox" x-model="addForm.auto_build" class="accent-brand-600" />
+                <span>Score + build package now <span class="text-ink-400">(Top Tier, resume + cover letter PDFs)</span></span>
+              </label>
+              <div class="ml-auto flex items-center gap-2">
+                <button @click="addModal = false" class="btn btn-secondary btn-sm">Cancel</button>
+                <button @click="submitAddJob()" :disabled="busyAdd || !addForm.title || !addForm.company" class="btn btn-primary btn-sm">
+                  <svg x-show="busyAdd" class="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.5" opacity="0.25"/><path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="2.5" fill="none"/></svg>
+                  <span x-text="busyAdd ? (addForm.auto_build ? 'Building package...' : 'Adding...') : (addForm.auto_build ? 'Add + build' : 'Add job')"></span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <template x-if="jdModal">
+        <div class="fixed inset-0 bg-ink-900/40 backdrop-blur-sm flex items-start justify-center z-40 py-10 px-4 overflow-y-auto modal-backdrop"
+             @click.self="jdModal = null">
+          <div class="card modal-panel w-full max-w-3xl">
+            <div class="border-b border-line px-5 py-3 flex items-center gap-3">
+              <div class="min-w-0 flex-1">
+                <div class="font-semibold text-sm truncate" x-text="jdModal.title"></div>
+                <div class="text-xs text-ink-600 truncate" x-text="jdModal.company + ' · ' + jdModal.location"></div>
+              </div>
+              <a :href="jdModal.url" target="_blank" rel="noopener" class="btn btn-secondary btn-sm">
+                <i data-lucide="external-link" class="w-3.5 h-3.5"></i> Open
+              </a>
+              <button x-show="jdModal.application_package_created" @click="openPackage(jdModal); jdModal = null" class="btn btn-primary btn-sm">
+                <i data-lucide="folder-open" class="w-3.5 h-3.5"></i> Package
+              </button>
+              <button @click="jdModal = null" class="btn btn-ghost btn-icon" title="Close">
+                <i data-lucide="x" class="w-4 h-4"></i>
+              </button>
+            </div>
+            <div class="p-5 max-h-[72vh] overflow-y-auto text-sm space-y-4">
+              <div class="flex flex-wrap items-center gap-3 text-xs text-ink-600">
+                <span class="pill"
+                      :class="{
+                        'pill-top': jdModal.tier === 'Top Tier',
+                        'pill-second': jdModal.tier === 'Second Choice',
+                        'pill-reject': jdModal.tier === 'Reject',
+                        'pill-empty': !jdModal.tier
+                      }"
+                      x-text="jdModal.tier || 'unsorted'"></span>
+                <span><span class="text-ink-400">Score</span> <span class="mono" x-text="jdModal.score ?? '-'"></span></span>
+                <span><span class="text-ink-400">Salary</span> <span class="mono" x-text="formatSalary(jdModal.sal_min, jdModal.sal_max) || 'n/a'"></span></span>
+                <span><span class="text-ink-400">Status</span> <span x-text="jdModal.status || '-'"></span></span>
+              </div>
+              <div>
+                <div class="text-[11px] uppercase tracking-wide text-ink-400 font-medium mb-1">Rubric breakdown</div>
+                <pre class="whitespace-pre-wrap text-xs bg-surface-2 border border-line rounded-md p-3 mono leading-relaxed"
+                     x-text="jdModalDetail?.breakdown || '(loading)'"></pre>
+              </div>
+              <div>
+                <div class="text-[11px] uppercase tracking-wide text-ink-400 font-medium mb-1">Description</div>
+                <template x-if="jdModalDetail?.description">
+                  <div class="md-prose text-sm" x-html="renderedJDModal"></div>
+                </template>
+                <template x-if="!jdModalDetail?.description">
+                  <pre class="whitespace-pre-wrap text-xs bg-surface-2 border border-line rounded-md p-3 text-ink-400" x-text="jdModalDetail ? '(no description)' : 'loading...'"></pre>
+                </template>
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
+
+    </div>
+  </div>
+
+</div>
+
+<!-- ====================================================================== -->
+<!-- CodeMirror module loader                                                -->
+<!-- ====================================================================== -->
+<script type="module">
+  import { EditorState } from "https://esm.sh/@codemirror/state@6.4.1";
+  import { EditorView, keymap, lineNumbers, highlightActiveLine } from "https://esm.sh/@codemirror/view@6.28.4";
+  import { defaultKeymap, history, historyKeymap, indentWithTab } from "https://esm.sh/@codemirror/commands@6.6.0";
+  import { markdown } from "https://esm.sh/@codemirror/lang-markdown@6.2.5";
+  window.__cm = { EditorState, EditorView, keymap, lineNumbers, highlightActiveLine,
+                  defaultKeymap, history, historyKeymap, indentWithTab, markdown };
+</script>
+
+<!-- ====================================================================== -->
+<!-- App script                                                              -->
+<!-- ====================================================================== -->
+<script>
+  function jobsApp() {
+    return {
+      version: '1.0.0',
+      token: '',
+      tokenInput: '',
+      loading: false,
+      statsLoading: false,
+      toasts: [],
+      confirmModal: null,
+      overrideModal: null,
+      customScrapeModal: false,
+      customScrapeForm: {
+        keywords: '',
+        location: 'United States',
+        workplace_type: 'any',
+        salary_min: null,
+        date_window: 'week',
+        pages: 2,
+        run_label: '',
+      },
+      sidebarCollapsed: false,
+      lastRefreshed: '',
+
+      // Routing
+      screen: 'dashboard',
+      navItems: [
+        { key: 'dashboard',     label: 'Dashboard',      icon: 'layout-dashboard' },
+        { key: 'queue',         label: 'Queue',          icon: 'list-checks' },
+        { key: 'build-queue',   label: 'Build queue',    icon: 'hammer' },
+        { key: 'built',         label: 'Built',          icon: 'folder-open' },
+        { key: 'applied',       label: 'Applied',        icon: 'send' },
+      ],
+
+      // List/queue state
+      jobs: [],
+      filterTier: 'all',
+      filterStatus: 'all',
+      filterPackage: 'all',
+      filterStage: 'all',
+      filterLimit: 100,
+      addModal: false,
+      busyAdd: false,
+      addForm: { title: '', company: '', source_url: '', location: '', workplace: '',
+                 tier: '', status: 'New', stage: '', salary_min: null,
+                 salary_max: null, description: '', auto_build: true },
+      searchQuery: '',
+      triageMode: 'empty', // 'empty' | 'reject'
+      sortField: 'score',
+      sortDir: 'desc',
+
+      // Dashboard
+      stats: { new_last_7d: null, to_triage: null, queued_to_build: null, built_awaiting_review: null, applied_last_30d: null },
+      recentActivity: [],
+
+      // JD modal (used from list screens)
+      jdModal: null,
+      jdModalDetail: null,
+
+      // Detail view state
+      detail: null,
+      pkg: null,
+      activeTab: 'jd',
+      showRubric: false,
+      rightPanel: true,
+      tabs: [
+        { key: 'jd',       label: 'Job Description', icon: 'file-text' },
+        { key: 'resume',   label: 'Resume',          icon: 'user-round' },
+        { key: 'cover',    label: 'Cover Letter',    icon: 'mail' },
+        { key: 'email',    label: 'Email',           icon: 'send' },
+        { key: 'linkedin', label: 'LinkedIn',        icon: 'message-square' },
+        { key: 'notes',    label: 'Notes',           icon: 'sticky-note' },
+      ],
+      editorState: { resume: '', cover: '', email: '', linkedin: '', notes: '' },
+      dirty:       { resume: false, cover: false, email: false, linkedin: false, notes: false },
+      lastSavedAt: null,
+      lastSavedAgo: '',
+      cmView: null,
+      busySave: false,
+      busyRender: false,
+      busyBuild: null,
+      busyDelete: null,
+      busyPurge: false,
+      pdfBlobUrl: '',
+
+      // n8n webhook triggers. The base URL is stored in this browser
+      // (Settings menu -> "Set n8n URL"); paths match the shipped workflows.
+      n8nBase: localStorage.getItem('n8n_base') || 'http://localhost:5678',
+      n8nTriggers: {
+        scraper_scheduled: {
+          path: '/webhook/job-pipeline/scrape',
+          label: 'Scheduled scrape',
+          confirm: false, autoRefresh: true, timeoutMs: 360000,
+        },
+        scraper_custom: {
+          path: '/webhook/job-pipeline/custom-scrape',
+          label: 'Custom scrape',
+          confirm: false, autoRefresh: true, timeoutMs: 360000,
+        },
+      },
+      busyTrigger: { scraper_scheduled: false, scraper_custom: false, build_queue: false },
+
+      // ---------- Derived ----------
+      get isListScreen() {
+        return ['queue','build-queue','built','applied'].includes(this.screen);
+      },
+
+      get currentView() {
+        const views = {
+          triage:        { title: 'Triage',       subtitle: 'Sort uncategorized jobs into tiers, or revisit rejects.' },
+          queue:         { title: 'Queue',        subtitle: 'All scored jobs. Toggle Build to flag for the next batch.' },
+          'build-queue': { title: 'Build queue',  subtitle: 'Flagged for build, not yet packaged. Run all when ready.' },
+          built:         { title: 'Built',        subtitle: 'Packages ready for review. Open one to edit and apply.' },
+          applied:       { title: 'Applied',      subtitle: 'Jobs you have applied to.' },
+        };
+        return views[this.screen];
+      },
+
+      get breadcrumb() {
+        if (this.screen === 'detail') {
+          const item = this.detail ? `${this.detail.company} - ${this.detail.title}` : 'Loading...';
+          return { section: 'Queue', item };
+        }
+        const labels = {
+          dashboard: 'Dashboard', triage: 'Triage', queue: 'Queue',
+          'build-queue': 'Build queue', built: 'Built', applied: 'Applied',
+        };
+        return { section: labels[this.screen] || 'Job Pipeline', item: '' };
+      },
+
+      get statCards() {
+        return [
+          { key: 'new7',     label: 'New (7d)',          value: this.stats.new_last_7d,           icon: 'sparkles',     href: '#queue', sub: 'Last 7 days' },
+          { key: 'triage',   label: 'To triage',         value: this.stats.to_triage,             icon: 'inbox',        href: '#queue', filter: { tier: 'unsorted' } },
+          { key: 'queued',   label: 'Queued to build',   value: this.stats.queued_to_build,       icon: 'hammer',       href: '#build-queue' },
+          { key: 'built',    label: 'Built, in review',  value: this.stats.built_awaiting_review, icon: 'folder-open',  href: '#built' },
+          { key: 'applied',  label: 'Applied (30d)',     value: this.stats.applied_last_30d,      icon: 'send',         href: '#applied' },
+        ];
+      },
+
+      get saveStateText() {
+        if (this.busySave) return 'Saving...';
+        if (this.dirty[this.activeTab]) return 'Unsaved changes';
+        if (this.lastSavedAgo) return 'Saved ' + this.lastSavedAgo;
+        return '';
+      },
+
+      get visibleTabs() {
+        // Hide cover/email/linkedin tabs when the active package has no content
+        // for them. Legacy packages with all 4 files still show all tabs.
+        // Resume-only packages show only jd/resume/notes.
+        const hideKeys = new Set();
+        if (this.pkg) {
+          if (!this.pkg.cover_letter_md) hideKeys.add('cover');
+          if (!this.pkg.email_md)        hideKeys.add('email');
+          if (!this.pkg.linkedin_md)     hideKeys.add('linkedin');
+        }
+        return this.tabs.filter(t => !hideKeys.has(t.key));
+      },
+
+      get filteredJobs() {
+        const q = (this.searchQuery || '').trim().toLowerCase();
+        if (!q) return this.jobs;
+        const tokens = q.split(/\s+/).filter(Boolean);
+        return this.jobs.filter(row => {
+          const haystack = [row.title, row.company, row.location, row.tier]
+            .filter(Boolean).join(' ').toLowerCase();
+          return tokens.every(t => haystack.includes(t));
+        });
+      },
+
+      get sortedJobs() {
+        const TIER_ORDER = { 'Top Tier': 1, 'Second Choice': 2, 'Reject': 3, '': 4 };
+        const STAGE_ORDER = { '': 0, 'Applied': 1, 'Heard Back': 2, 'Screen': 3, 'Interview': 4, 'Offer': 5, 'Rejected': 6, 'Ghosted': 7 };
+        const field = this.sortField;
+        const dir = this.sortDir === 'asc' ? 1 : -1;
+        const getKey = (row) => {
+          if (field === 'salary') return (row.sal_min || row.sal_max || 0);
+          if (field === 'score') return (row.score || 0);
+          if (field === 'created_at') return row.created_at ? new Date(row.created_at).getTime() : 0;
+          if (field === 'tier')  return TIER_ORDER[row.tier || ''] ?? 99;
+          if (field === 'stage') return STAGE_ORDER[row.stage || ''] ?? 99;
+          if (field === 'build_package' || field === 'application_package_created') return row[field] ? 1 : 0;
+          const v = row[field];
+          return v == null ? '' : (typeof v === 'string' ? v.toLowerCase() : v);
+        };
+        return [...this.filteredJobs].sort((a, b) => {
+          const av = getKey(a), bv = getKey(b);
+          if (av < bv) return -1 * dir;
+          if (av > bv) return  1 * dir;
+          return 0;
+        });
+      },
+
+      get renderedPreview() {
+        const raw = this.editorState[this.activeTab] || '';
+        const html = window.marked ? window.marked.parse(raw) : '';
+        return window.DOMPurify ? window.DOMPurify.sanitize(html) : '';
+      },
+
+      get renderedJD() {
+        const raw = this.detail?.description || '';
+        if (!raw.trim()) return '';
+        const html = window.marked ? window.marked.parse(raw) : '';
+        return window.DOMPurify ? window.DOMPurify.sanitize(html) : '';
+      },
+
+      get renderedJDModal() {
+        const raw = this.jdModalDetail?.description || '';
+        if (!raw.trim()) return '';
+        const html = window.marked ? window.marked.parse(raw) : '';
+        return window.DOMPurify ? window.DOMPurify.sanitize(html) : '';
+      },
+
+      // ---------- Boot ----------
+      boot() {
+        this.token = localStorage.getItem('jobpipeline_token') || '';
+        window.addEventListener('hashchange', () => this.routeFromHash());
+        window.addEventListener('keydown', (e) => this.onKeydown(e));
+        this.routeFromHash();
+        // Refresh "Saved Xs ago" labels
+        setInterval(() => this.tickSavedAgo(), 1000);
+        // Lucide icons on initial render + after Alpine settles
+        this.$nextTick(() => this.refreshIcons());
+        if (this.token) {
+          this.loadInitialForScreen();
+        }
+      },
+
+      refreshIcons() {
+        if (window.lucide && typeof window.lucide.createIcons === 'function') {
+          try { window.lucide.createIcons(); } catch (e) { /* ignore */ }
+        }
+      },
+
+      routeFromHash() {
+        const h = (window.location.hash || '').replace(/^#/, '') || 'dashboard';
+        if (h.startsWith('detail/')) {
+          const parts = h.slice('detail/'.length).split('/');
+          const id = parts[0];
+          const tab = parts[1] || 'jd';
+          if (id) this.openPackageById(id, tab);
+          return;
+        }
+        const known = this.navItems.map(n => n.key);
+        this.screen = known.includes(h) ? h : 'dashboard';
+        this.$nextTick(() => this.refreshIcons());
+        if (this.token) this.loadInitialForScreen();
+      },
+
+      onKeydown(e) {
+        if (this.screen === 'detail') {
+          if (e.key === 'Escape' && !this.confirmModal && !this.jdModal) { e.preventDefault(); this.goBack(); return; }
+          const isMod = e.ctrlKey || e.metaKey;
+          if (isMod && !e.shiftKey && e.key.toLowerCase() === 's') { e.preventDefault(); this.saveCurrent(); return; }
+          if (isMod && e.shiftKey && e.key.toLowerCase() === 'r') { e.preventDefault(); this.renderPdf(); return; }
+          // Number keys: tab switch (avoid when typing in editor, CodeMirror focused)
+          const inEditor = document.activeElement && document.activeElement.closest && document.activeElement.closest('.cm-wrapper');
+          const inInput = document.activeElement && ['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName);
+          if (!inEditor && !inInput && !e.altKey && !e.ctrlKey && !e.metaKey) {
+            const visible = this.visibleTabs;
+            const idx = Number(e.key) - 1;
+            if (Number.isInteger(idx) && idx >= 0 && idx < visible.length) {
+              e.preventDefault();
+              this.switchTab(visible[idx].key);
+            }
+          }
+        } else if (this.jdModal && e.key === 'Escape') {
+          e.preventDefault(); this.jdModal = null;
+        } else if (this.confirmModal && e.key === 'Escape') {
+          e.preventDefault(); this.confirmModal = null;
+        }
+      },
+
+      // ---------- Token ----------
+      saveToken() {
+        const t = (this.tokenInput || '').trim();
+        if (!t) { this.toast('Token cannot be empty', 'error'); return; }
+        this.token = t;
+        localStorage.setItem('jobpipeline_token', t);
+        this.tokenInput = '';
+        this.loadInitialForScreen();
+      },
+      clearToken() {
+        this.token = '';
+        localStorage.removeItem('jobpipeline_token');
+        this.jobs = [];
+        this.detail = null;
+        this.pkg = null;
+      },
+      setN8nBase() {
+        const cur = this.n8nBase || 'http://localhost:5678';
+        const next = window.prompt('n8n base URL (where the two workflows are installed):', cur);
+        if (next === null) return;
+        this.n8nBase = (next || 'http://localhost:5678').trim().replace(/\/+$/, '');
+        localStorage.setItem('n8n_base', this.n8nBase);
+        this.toast('n8n base URL saved: ' + this.n8nBase, 'success');
+      },
+
+      // ---------- HTTP ----------
+      async api(method, path, body) {
+        if (!this.token) throw new Error('No token');
+        const opts = { method, headers: { 'Authorization': 'Bearer ' + this.token } };
+        if (body !== undefined) {
+          opts.headers['Content-Type'] = 'application/json';
+          opts.body = JSON.stringify(body);
+        }
+        const resp = await fetch(path, opts);
+        if (resp.status === 401 || resp.status === 403) {
+          this.toast('Auth rejected (' + resp.status + '). Re-enter token.', 'error');
+          this.clearToken();
+          throw new Error('auth_failed');
+        }
+        const text = await resp.text();
+        let data = null;
+        try { data = text ? JSON.parse(text) : null; } catch (e) { /* leave raw */ }
+        if (!resp.ok) {
+          const detail = (data && (data.detail?.detail || data.detail?.error || data.error)) || text || ('HTTP ' + resp.status);
+          throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+        }
+        return data;
+      },
+
+      async apiPdf(path) {
+        if (!this.token) throw new Error('No token');
+        const resp = await fetch(path, { headers: { 'Authorization': 'Bearer ' + this.token } });
+        if (!resp.ok) throw new Error('pdf fetch failed: ' + resp.status);
+        return resp.blob();
+      },
+
+      toast(msg, kind = 'info', ttl = 4000) {
+        const id = Date.now() + Math.random();
+        this.toasts.push({ id, msg, kind });
+        this.$nextTick(() => this.refreshIcons());
+        if (ttl > 0) setTimeout(() => { this.toasts = this.toasts.filter(t => t.id !== id); }, ttl);
+      },
+
+      // ---------- Confirm modal helper ----------
+      confirm({ title, message, okLabel, danger }) {
+        return new Promise((resolve) => {
+          this.confirmModal = { title, message, okLabel, danger, resolve };
+          this.$nextTick(() => this.refreshIcons());
+        });
+      },
+      confirmYes() {
+        if (this.confirmModal?.resolve) this.confirmModal.resolve(true);
+        this.confirmModal = null;
+      },
+
+      // ---------- Routing helpers ----------
+      goBack() {
+        if (Array.from(this.navItems).some(n => n.key === this.previousScreen)) {
+          window.location.hash = this.previousScreen;
+        } else {
+          window.location.hash = 'queue';
+        }
+      },
+      previousScreen: 'queue',
+
+      // ---------- Data loaders per screen ----------
+      async loadInitialForScreen() {
+        this.$nextTick(() => this.refreshIcons());
+        if (this.screen === 'dashboard') {
+          await this.loadStats();
+        } else if (this.isListScreen) {
+          await this.loadJobs();
+        }
+        this.lastRefreshed = new Date().toLocaleTimeString();
+      },
+
+      async refreshAll() {
+        if (!this.token) return;
+        this.lastRefreshed = '';
+        if (this.screen === 'dashboard') { await this.loadStats(); }
+        else if (this.isListScreen) { await this.loadJobs(); }
+        else if (this.screen === 'detail' && this.detail) { await this.openPackageById(this.detail.record_id, this.activeTab); }
+        this.lastRefreshed = new Date().toLocaleTimeString();
+      },
+
+      // ---------- Stats / Activity ----------
+      async loadStats() {
+        if (!this.token) return;
+        this.statsLoading = true;
+        try {
+          const s = await this.api('GET', '/jobs/api/stats');
+          this.stats = s || this.stats;
+          // Sync nav badge counts
+          this.navItems = this.navItems.map(n => {
+            if (n.key === 'triage')      return { ...n, count: this.stats.to_triage };
+            if (n.key === 'build-queue') return { ...n, count: this.stats.queued_to_build };
+            if (n.key === 'built')       return { ...n, count: this.stats.built_awaiting_review };
+            return n;
+          });
+        } catch (e) {
+          this.toast('Stats failed: ' + e.message, 'error');
+        } finally {
+          this.statsLoading = false;
+        }
+        // Recent activity: derive from a recent /jobs query (no separate endpoint).
+        try {
+          const recent = await this.api('GET', '/jobs/api/jobs?limit=20');
+          this.recentActivity = (recent || [])
+            .slice(0, 20)
+            .map(r => ({
+              id: r.record_id,
+              icon: r.application_package_created ? 'folder-open' : (r.tier ? 'tag' : 'plus-circle'),
+              label: this.activityLabel(r),
+              when: this.timeAgo(r.created_at),
+              href: r.application_package_created ? ('#detail/' + r.record_id) : ('#queue'),
+            }));
+          this.$nextTick(() => this.refreshIcons());
+        } catch (e) { /* non-fatal */ }
+      },
+
+      activityLabel(r) {
+        if (r.status === 'Applied') return `Applied to ${r.company} - ${r.title}`;
+        if (r.application_package_created) return `Package built: ${r.company} - ${r.title}`;
+        if (r.tier) return `${r.tier}: ${r.company} - ${r.title}`;
+        return `New job: ${r.company} - ${r.title}`;
+      },
+
+      timeAgo(iso) {
+        if (!iso) return '';
+        const d = new Date(iso);
+        const sec = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
+        if (sec < 60)   return sec + 's ago';
+        const min = Math.floor(sec / 60);
+        if (min < 60)   return min + 'm ago';
+        const hr  = Math.floor(min / 60);
+        if (hr < 24)    return hr + 'h ago';
+        const day = Math.floor(hr / 24);
+        if (day < 30)   return day + 'd ago';
+        return d.toLocaleDateString();
+      },
+
+      tickSavedAgo() {
+        if (!this.lastSavedAt) { this.lastSavedAgo = ''; return; }
+        this.lastSavedAgo = this.timeAgo(new Date(this.lastSavedAt).toISOString());
+      },
+
+      // ---------- Queue / Jobs list ----------
+      async loadJobs() {
+        if (!this.token) return;
+        this.loading = true;
+        try {
+          // Each view applies its own server-side filter via /jobs/api/jobs.
+          // For views the backend doesn't directly support (triage/empty-tier,
+          // build-queue, built/awaiting-review), fetch a broad set and filter
+          // client-side. This avoids new backend endpoints.
+          let qs;
+          if (this.screen === 'built') {
+            // Built packages are mostly OLDER rows. Filtering client-side after a
+            // created_at-DESC limit hid them (only the newest, rarely-built rows
+            // survived the cap). Ask the server for built rows directly instead.
+            // Backend caps limit at 500, which comfortably covers the built set.
+            qs = new URLSearchParams({ tier: 'all', status: 'built', limit: '500' });
+          } else if (this.screen === 'build-queue') {
+            qs = new URLSearchParams({ tier: 'all', status: 'all', limit: '500' });
+          } else if (this.screen === 'applied') {
+            qs = new URLSearchParams({ tier: 'all', status: 'applied', limit: String(this.filterLimit || 200) });
+          } else {
+            // queue (default): respect filter widgets. "Has package" fetches built
+            // rows server-side (older-rows reason). "Unsorted" has no server status,
+            // so fetch all and filter to no-tier client-side.
+            const serverStatus = this.filterPackage === 'yes' ? 'built' : this.filterStatus;
+            const serverTier = this.filterTier === 'unsorted' ? 'all' : this.filterTier;
+            qs = new URLSearchParams({
+              tier: serverTier, status: serverStatus,
+              limit: '500',
+            });
+          }
+          let rows = await this.api('GET', '/jobs/api/jobs?' + qs.toString());
+          if (this.screen === 'build-queue') {
+            rows = rows.filter(r => r.build_package && !r.application_package_created);
+          } else if (this.screen === 'built') {
+            rows = rows.filter(r => r.application_package_created);
+          } else if (this.screen === 'queue') {
+            if (this.filterTier === 'unsorted') rows = rows.filter(r => !r.tier);
+            if (this.filterPackage === 'no') rows = rows.filter(r => !r.application_package_created);
+            else if (this.filterPackage === 'yes') rows = rows.filter(r => r.application_package_created);
+          }
+          // Applied jobs live only in the Applied view; hide them everywhere else
+          // so marking a job Applied removes it from triage/queue/build views.
+          if (this.screen !== 'applied') {
+            rows = rows.filter(r => r.status !== 'Applied');
+          }
+          // Applied view: optional stage filter.
+          if (this.screen === 'applied' && this.filterStage !== 'all') {
+            rows = rows.filter(r => (r.stage || 'Applied') === this.filterStage);
+          }
+          this.jobs = rows;
+        } catch (e) {
+          this.toast('Load failed: ' + e.message, 'error');
+        } finally {
+          this.loading = false;
+          this.lastRefreshed = new Date().toLocaleTimeString();
+          this.$nextTick(() => this.refreshIcons());
+        }
+      },
+
+      formatDate(iso) {
+        if (!iso) return '';
+        const d = new Date(iso);
+        if (isNaN(d)) return '';
+        return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+      },
+
+      formatSalary(lo, hi) {
+        if (lo && hi) return '$' + Math.round(lo/1000) + 'K-' + Math.round(hi/1000) + 'K';
+        if (lo)       return '$' + Math.round(lo/1000) + 'K+';
+        if (hi)       return 'up to $' + Math.round(hi/1000) + 'K';
+        return '';
+      },
+
+      toggleSort(field) {
+        if (this.sortField === field) {
+          this.sortDir = this.sortDir === 'asc' ? 'desc' : 'asc';
+        } else {
+          this.sortField = field;
+          this.sortDir = ['score', 'salary', 'build_package', 'application_package_created', 'created_at'].includes(field) ? 'desc' : 'asc';
+        }
+      },
+
+      sortIndicator(field) {
+        if (this.sortField !== field) return '';
+        return this.sortDir === 'asc' ? '↑' : '↓';
+      },
+
+      async patchJob(row, patch) {
+        try {
+          const updated = await this.api('PATCH', '/jobs/api/jobs/' + row.record_id, patch);
+          Object.assign(row, updated);
+          this.toast('Saved', 'success', 1500);
+        } catch (e) {
+          this.toast('Patch failed: ' + e.message, 'error');
+        }
+      },
+
+      async toggleApplied(row, checked) {
+        // Unchecking reverts to the most sensible prior status rather than blank.
+        const next = checked ? 'Applied' : (row.application_package_created ? 'Built' : 'New');
+        // Entering Applied seeds the funnel at stage 'Applied'; leaving clears it.
+        const patch = checked ? { status: next, stage: 'Applied' } : { status: next, stage: '' };
+        await this.patchJob(row, patch);
+        this.loadStats();
+        // Reload so the row moves out of (or into) the current view per the
+        // Applied-only-in-Applied-view rule.
+        await this.loadJobs();
+      },
+
+      async handleStageChange(row, event) {
+        await this.patchJob(row, { stage: event.target.value });
+        this.loadStats();
+        // If a stage filter is active on the Applied view, refresh so the row
+        // moves to the right bucket.
+        if (this.screen === 'applied' && this.filterStage !== 'all') await this.loadJobs();
+      },
+
+      openAddJob() {
+        this.addForm = { title: '', company: '', source_url: '', location: '', workplace: '',
+                         tier: '', status: 'New', stage: '', salary_min: null,
+                         salary_max: null, description: '', auto_build: true };
+        this.addModal = true;
+        this.$nextTick(() => this.refreshIcons());
+      },
+
+      async submitAddJob() {
+        if (this.busyAdd) return;
+        const f = this.addForm;
+        if (!f.title.trim() || !f.company.trim()) {
+          this.toast('Title and company are required', 'error');
+          return;
+        }
+        this.busyAdd = true;
+        try {
+          // Drop empty strings/nulls so the backend applies its defaults.
+          const payload = {};
+          Object.entries(f).forEach(([k, v]) => {
+            if (v !== '' && v !== null && v !== undefined) payload[k] = v;
+          });
+          // Stage only meaningful when Applied.
+          if (payload.status !== 'Applied') delete payload.stage;
+          const res = await this.api('POST', '/jobs/api/jobs', payload);
+          let msg = res.created ? 'Job added' : 'Job already existed (matched by URL)';
+          if (res.created && res.build) {
+            msg += res.build.built ? ' + package built (resume + cover letter PDFs)'
+                                   : ' (build failed: ' + (res.build.detail || res.build.error || '') + ')';
+          }
+          this.toast(msg, res.created ? 'success' : 'info', 7000);
+          this.addModal = false;
+          await this.loadJobs();
+          this.loadStats();
+        } catch (e) {
+          this.toast('Add failed: ' + e.message, 'error');
+        } finally {
+          this.busyAdd = false;
+        }
+      },
+
+      async handleTierChange(row, event) {
+        const newTier = event.target.value;
+        const isCorrection =
+          row.tier === 'Reject' &&
+          (newTier === 'Top Tier' || newTier === 'Second Choice') &&
+          row.was_ai_rejected;
+        if (!isCorrection) {
+          await this.patchJob(row, { tier: newTier });
+          return;
+        }
+        const result = await this.promptOverrideReason(row, newTier);
+        if (result === null) {
+          // Cancelled: restore the select's displayed value to row.tier.
+          event.target.value = row.tier;
+          return;
+        }
+        await this.patchJob(row, {
+          tier: newTier,
+          ai_override: true,
+          override_reason: (result.reason || '').trim(),
+        });
+      },
+
+      promptOverrideReason(row, newTier) {
+        return new Promise(resolve => {
+          this.overrideModal = { row, newTier, reason: '', resolve };
+          this.$nextTick(() => this.refreshIcons());
+        });
+      },
+
+      resolveOverride(value) {
+        const m = this.overrideModal;
+        this.overrideModal = null;
+        if (m && m.resolve) m.resolve(value);
+      },
+
+      async openJD(row) {
+        this.jdModal = row;
+        this.jdModalDetail = null;
+        this.$nextTick(() => this.refreshIcons());
+        try {
+          this.jdModalDetail = await this.api('GET', '/jobs/api/jobs/' + row.record_id);
+        } catch (e) {
+          this.toast('JD load failed: ' + e.message, 'error');
+        }
+      },
+
+      async buildOne(row) {
+        const ok = await this.confirm({
+          title: 'Build package?',
+          message: `${row.title} @ ${row.company}\n\nCosts a few Anthropic calls (~30-60s).`,
+          okLabel: 'Build now',
+        });
+        if (!ok) return;
+        this.busyBuild = row.record_id;
+        try {
+          const r = await this.api('POST', '/jobs/api/jobs/' + row.record_id + '/build');
+          if (r.built) {
+            this.toast('Built: ' + (r.package_path || ''), 'success');
+            await this.loadJobs();
+          } else {
+            this.toast('Build returned: ' + (r.error || JSON.stringify(r)), 'error', 8000);
+          }
+        } catch (e) {
+          this.toast('Build failed: ' + e.message, 'error', 8000);
+        } finally {
+          this.busyBuild = null;
+        }
+      },
+
+      async confirmRunBuildQueue() {
+        return this.runBuildQueue();
+      },
+
+      async runBuildQueue() {
+        const ok = await this.confirm({
+          title: 'Run build queue?',
+          message: 'Builds a package for every row flagged Build = on. Real Anthropic API charges apply (typically $0.50 to $3 per run depending on queue size).',
+          okLabel: 'Run build queue',
+          danger: true,
+        });
+        if (!ok) return;
+        this.busyTrigger.build_queue = true;
+        this.toast('Build queue started (can take several minutes)...', 'info', 4000);
+        try {
+          const r = await this.api('POST', '/jobs/build', {});
+          this.toast('Build done: ' + (r?.built ?? 0) + ' built, ' + (r?.failed ?? 0) + ' failed', 'success', 7000);
+          await this.refreshAll();
+        } catch (e) {
+          this.toast('Build failed: ' + e.message, 'error', 9000);
+        } finally {
+          this.busyTrigger.build_queue = false;
+        }
+      },
+
+      // ---------- Detail ----------
+      openPackage(row) {
+        this.previousScreen = this.screen;
+        window.location.hash = 'detail/' + row.record_id;
+      },
+
+      async openPackageById(record_id, tab) {
+        this.screen = 'detail';
+        this.detail = null;
+        this.pkg = null;
+        this.editorState = { resume: '', cover: '', email: '', linkedin: '', notes: '' };
+        this.dirty = { resume: false, cover: false, email: false, linkedin: false, notes: false };
+        this.pdfBlobUrl = '';
+        try {
+          this.detail = await this.api('GET', '/jobs/api/jobs/' + record_id);
+          this.pkg    = await this.api('GET', '/jobs/api/jobs/' + record_id + '/package');
+          this.editorState.resume   = this.pkg.resume_md       || '';
+          this.editorState.cover    = this.pkg.cover_letter_md || '';
+          this.editorState.email    = this.pkg.email_md        || '';
+          this.editorState.linkedin = this.pkg.linkedin_md     || '';
+          this.editorState.notes    = this.pkg.notes_md        || '';
+          this.activeTab = (tab && ['jd','resume','cover','email','linkedin','notes'].includes(tab)) ? tab : 'jd';
+          this.showRubric = false;
+          if (this.cmView) { try { this.cmView.destroy(); } catch (e) {} this.cmView = null; }
+          if (this.pkg.has_resume_pdf) this.reloadPdf();
+          // If we landed on a non-JD tab directly, mount the editor.
+          if (this.activeTab !== 'jd') this.$nextTick(() => this.mountEditor());
+          this.$nextTick(() => this.refreshIcons());
+        } catch (e) {
+          this.toast('Package load failed: ' + e.message, 'error');
+        }
+      },
+
+      tabFilename(key) {
+        return {
+          resume: 'resume.md', cover: 'cover-letter.md',
+          email: 'email-body.md', linkedin: 'linkedin-outreach.md', notes: 'notes.md',
+        }[key];
+      },
+
+      mountEditor() {
+        const root = document.getElementById('editorRoot');
+        if (!root || !window.__cm) return;
+        const { EditorState, EditorView, keymap, lineNumbers, highlightActiveLine,
+                defaultKeymap, history, historyKeymap, indentWithTab, markdown } = window.__cm;
+        if (this.cmView) { try { this.cmView.destroy(); } catch (e) {} }
+        root.innerHTML = '';
+        const initial = this.editorState[this.activeTab] || '';
+        const updateListener = EditorView.updateListener.of((u) => {
+          if (u.docChanged) {
+            const newValue = u.state.doc.toString();
+            const tab = this.activeTab;
+            if (this.editorState[tab] !== newValue) {
+              this.editorState[tab] = newValue;
+              this.dirty[tab] = true;
+            }
+          }
+        });
+        const state = EditorState.create({
+          doc: initial,
+          extensions: [
+            lineNumbers(),
+            highlightActiveLine(),
+            history(),
+            keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
+            markdown(),
+            EditorView.lineWrapping,
+            updateListener,
+          ],
+        });
+        this.cmView = new EditorView({ state, parent: root });
+      },
+
+      switchTab(key) {
+        if (this.cmView && this.activeTab !== 'jd') {
+          this.editorState[this.activeTab] = this.cmView.state.doc.toString();
+        }
+        this.activeTab = key;
+        this.$nextTick(() => this.refreshIcons());
+        if (key === 'jd') return;
+        if (!this.cmView) { this.$nextTick(() => this.mountEditor()); return; }
+        const next = this.editorState[key] || '';
+        this.cmView.dispatch({ changes: { from: 0, to: this.cmView.state.doc.length, insert: next } });
+      },
+
+      async saveCurrent() {
+        const tab = this.activeTab;
+        const fname = this.tabFilename(tab);
+        if (!this.detail || !fname) return;
+        this.busySave = true;
+        try {
+          const content = this.cmView ? this.cmView.state.doc.toString() : (this.editorState[tab] || '');
+          await this.api('PUT', '/jobs/api/jobs/' + this.detail.record_id + '/package/' + fname, { content });
+          this.editorState[tab] = content;
+          this.dirty[tab] = false;
+          this.lastSavedAt = Date.now();
+          this.tickSavedAgo();
+          this.pkg = await this.api('GET', '/jobs/api/jobs/' + this.detail.record_id + '/package');
+          this.toast('Saved ' + fname, 'success', 1500);
+        } catch (e) {
+          this.toast('Save failed: ' + e.message, 'error', 8000);
+        } finally {
+          this.busySave = false;
+        }
+      },
+
+      async renderPdf() {
+        if (!this.detail) return;
+        this.busyRender = true;
+        try {
+          const r = await this.api('POST', '/jobs/api/jobs/' + this.detail.record_id + '/render');
+          if (r.rendered) {
+            this.toast('Rendered in ' + r.duration_ms + 'ms', 'success');
+            this.pkg = await this.api('GET', '/jobs/api/jobs/' + this.detail.record_id + '/package');
+            this.reloadPdf();
+          } else {
+            this.toast('Render failed: ' + (r.stderr || r.error || JSON.stringify(r)), 'error', 8000);
+          }
+        } catch (e) {
+          this.toast('Render call failed: ' + e.message, 'error', 8000);
+        } finally {
+          this.busyRender = false;
+        }
+      },
+
+      async reloadPdf() {
+        if (!this.detail || !this.pkg?.has_resume_pdf) { this.pdfBlobUrl = ''; return; }
+        try {
+          if (this.pdfBlobUrl) { try { URL.revokeObjectURL(this.pdfBlobUrl); } catch (e) {} }
+          const blob = await this.apiPdf('/jobs/api/jobs/' + this.detail.record_id + '/pdf?ts=' + Date.now());
+          this.pdfBlobUrl = URL.createObjectURL(blob);
+        } catch (e) {
+          this.toast('PDF preview failed: ' + e.message, 'error');
+        }
+      },
+
+      async confirmMarkApplied() {
+        if (!this.detail) return;
+        const ok = await this.confirm({
+          title: 'Mark as applied?',
+          message: `Set status = Applied for ${this.detail.company} - ${this.detail.title}.`,
+          okLabel: 'Mark applied',
+        });
+        if (!ok) return;
+        try {
+          const updated = await this.api('PATCH', '/jobs/api/jobs/' + this.detail.record_id, { status: 'Applied' });
+          this.detail.status = updated.status;
+          this.toast('Status set to Applied', 'success');
+        } catch (e) {
+          this.toast('Patch failed: ' + e.message, 'error');
+        }
+      },
+
+      // ---------- Delete (single + bulk) ----------
+      async confirmDeleteJob(row) {
+        const titlePiece = (row.title || '(no title)') + ' @ ' + (row.company || '');
+        let extra = '';
+        if (row.application_package_created) extra += '\n\nThis row has a built package on disk. The package folder itself is NOT deleted, but the database record will be gone.';
+        if (row.status === 'Applied') extra += '\n\nThis row is marked Applied. Deleting drops the application record.';
+        const ok = await this.confirm({
+          title: 'Delete this row?',
+          message: 'Permanently deletes the database record for:\n' + titlePiece + extra + '\n\nThe scraper will not re-add it (seen_jobs dedup still remembers it).',
+          okLabel: 'Delete',
+          danger: true,
+        });
+        if (!ok) return;
+        this.busyDelete = row.record_id;
+        try {
+          await this.api('DELETE', '/jobs/api/jobs/' + row.record_id);
+          this.jobs = this.jobs.filter(j => j.record_id !== row.record_id);
+          this.toast('Deleted', 'success', 1500);
+          this.loadStats();
+        } catch (e) {
+          this.toast('Delete failed: ' + e.message, 'error', 8000);
+        } finally {
+          this.busyDelete = null;
+        }
+      },
+
+      async confirmPurgeRejects() {
+        if (!this.token) { this.toast('No bearer token loaded', 'error'); return; }
+        this.busyPurge = true;
+        let dry;
+        try {
+          dry = await this.api('POST', '/jobs/api/jobs/purge-rejects?dry_run=true');
+        } catch (e) {
+          this.busyPurge = false;
+          this.toast('Could not count Reject rows: ' + e.message, 'error', 7000);
+          return;
+        }
+        const n = dry?.would_delete ?? 0;
+        if (n === 0) {
+          this.busyPurge = false;
+          this.toast('No Reject-tier rows to purge', 'info', 3000);
+          return;
+        }
+        const ok = await this.confirm({
+          title: 'Purge ' + n + ' Reject row' + (n === 1 ? '' : 's') + '?',
+          message: 'Permanently deletes every database record where Tier = Reject. This is irreversible. The scraper will not re-add them (seen_jobs dedup keeps them out).',
+          okLabel: 'Purge ' + n,
+          danger: true,
+        });
+        if (!ok) { this.busyPurge = false; return; }
+        try {
+          const r = await this.api('POST', '/jobs/api/jobs/purge-rejects');
+          this.toast('Purged ' + (r?.deleted ?? 0) + ' Reject row(s)', 'success', 4000);
+          await this.loadJobs();
+          this.loadStats();
+        } catch (e) {
+          this.toast('Purge failed: ' + e.message, 'error', 8000);
+        } finally {
+          this.busyPurge = false;
+        }
+      },
+
+      // ---------- Custom scrape modal ----------
+      openCustomScrape() {
+        if (!this.token) { this.toast('Load a bearer token first', 'error'); return; }
+        this.customScrapeModal = true;
+        this.$nextTick(() => this.refreshIcons());
+      },
+
+      async submitCustomScrape() {
+        const f = this.customScrapeForm;
+        const keywords = (f.keywords || '').trim();
+        if (!keywords) { this.toast('Keywords are required', 'error'); return; }
+        if (!f.location || !f.location.trim()) { this.toast('Location is required', 'error'); return; }
+        const body = {
+          keywords,
+          location: f.location.trim(),
+          workplace_type: f.workplace_type || 'any',
+          salary_min: Number(f.salary_min) || 0,
+          date_window: f.date_window || 'week',
+          pages: Math.max(1, Math.min(5, Number(f.pages) || 2)),
+          run_label: (f.run_label || '').trim(),
+        };
+        this.customScrapeModal = false;
+        await this.runTrigger('scraper_custom', { body });
+      },
+
+      // ---------- n8n on-demand trigger ----------
+      async runTrigger(key, opts) {
+        const cfg = this.n8nTriggers[key];
+        if (!cfg) { this.toast('Unknown trigger: ' + key, 'error'); return; }
+        if (!this.token) { this.toast('No bearer token loaded', 'error'); return; }
+        const url = (this.n8nBase || 'http://localhost:5678').replace(/\/+$/, '') + cfg.path;
+        if (cfg.confirm && !opts?.skipConfirm) {
+          const ok = await this.confirm({
+            title: cfg.confirmTitle || ('Trigger ' + cfg.label + '?'),
+            message: cfg.confirmMsg || '',
+            okLabel: 'Run',
+            danger: true,
+          });
+          if (!ok) return;
+        }
+
+        this.busyTrigger[key] = true;
+        this.toast('Triggering ' + cfg.label + '...', 'info', 3000);
+        const ctrl = new AbortController();
+        const tHandle = setTimeout(() => ctrl.abort(), cfg.timeoutMs || 300000);
+        const startedAt = Date.now();
+
+        try {
+          const resp = await fetch(url, {
+            method: 'POST',
+            headers: { 'Authorization': 'Bearer ' + this.token, 'Content-Type': 'application/json' },
+            body: opts?.body ? JSON.stringify(opts.body) : '{}',
+            signal: ctrl.signal,
+          });
+          clearTimeout(tHandle);
+          const elapsedS = Math.round((Date.now() - startedAt) / 1000);
+          const text = await resp.text();
+          let data = null;
+          try { data = text ? JSON.parse(text) : null; } catch (e) {}
+
+          if (!resp.ok) {
+            const msg = (data && (data.message || data.error)) || text || ('HTTP ' + resp.status);
+            this.toast(cfg.label + ' failed (' + resp.status + ' in ' + elapsedS + 's): ' + msg, 'error', 9000);
+            return;
+          }
+
+          let summary = '';
+          if (data && typeof data === 'object') {
+            if (Array.isArray(data)) summary = data.length + ' items';
+            else {
+              const parts = [];
+              for (const k of ['built','new_jobs','queued','total','count','message','status']) {
+                if (data[k] !== undefined) parts.push(k + '=' + (typeof data[k] === 'object' ? JSON.stringify(data[k]) : data[k]));
+              }
+              summary = parts.length ? parts.join(', ') : 'ok';
+            }
+          } else summary = 'ok';
+          this.toast(cfg.label + ' done in ' + elapsedS + 's: ' + summary, 'success', 7000);
+
+          if (cfg.autoRefresh) {
+            try { await this.refreshAll(); } catch (e) {}
+          }
+        } catch (e) {
+          clearTimeout(tHandle);
+          const elapsedS = Math.round((Date.now() - startedAt) / 1000);
+          if (e.name === 'AbortError') {
+            this.toast(cfg.label + ' did not respond in ' + elapsedS + 's. The workflow may still be running in n8n.', 'error', 10000);
+          } else {
+            this.toast(cfg.label + ' call failed: ' + (e.message || e), 'error', 9000);
+          }
+        } finally {
+          this.busyTrigger[key] = false;
+        }
+      },
+    };
+  }
+  window.jobsApp = jobsApp;
+
+  // Refresh Lucide icons whenever Alpine re-renders the DOM.
+  // The render hook on document body covers most cases; explicit refreshIcons() calls
+  // sprinkled through the app cover the rest.
+  document.addEventListener('alpine:init', () => {
+    document.addEventListener('alpine:initialized', () => {
+      if (window.lucide) window.lucide.createIcons();
+    });
+  });
+  // Catch-all: periodic icon refresh for newly inserted DOM (cheap).
+  setInterval(() => { if (window.lucide) { try { window.lucide.createIcons(); } catch (e) {} } }, 2000);
+</script>
+</body>
+</html>

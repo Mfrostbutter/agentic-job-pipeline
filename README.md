@@ -70,7 +70,7 @@ Then import the workflows from [n8n/](n8n/) into your n8n instance, create the f
 
 | Path | What it is |
 |---|---|
-| `app/` | FastAPI service: bearer-gated API + single-file web UI (`/jobs/ui`) |
+| `app/` | FastAPI service: bearer-gated API + single-file web UIs (`/jobs/ui` job triage, `/leads/ui` recruiter leads) |
 | `pipeline/` | The agents and data layer. Job mode: `review_new_jobs.py`, `build_packages.py`, `jobs_repo.py`. Recruiter mode: `review_leads.py`, `outreach_packages.py`, `leads_repo.py`. Plus `seen_jobs_db.py`, `render_resume.py` |
 | `profile/` | YOUR search config, background digest, and resume/desk templates (examples ship; real files are gitignored) |
 | `n8n/` | Workflow exports (scheduled + custom-form job scrape, plus the recruiter aging-listings scan), sanitized and import-ready |

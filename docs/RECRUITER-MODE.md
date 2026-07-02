@@ -95,7 +95,10 @@ tool or CRM you use. Nothing in the pipeline sends on your behalf.
    four credentials (Postgres, Apify header auth, API bearer, webhook auth), the
    same ones the job workflows use. See `docs/SETUP.md`.
 2. Point `form/recruiter.html` at your n8n base URL and paste the bearer token.
-3. Run a scan, let review run, flag leads in the web UI, then trigger outreach.
+3. Run a scan, let review run, then open the leads dashboard at
+   `http://localhost:8094/leads/ui` (paste the same bearer token). Flag the leads
+   worth pursuing and click **Draft outreach**; the drawer shows each drafted
+   LinkedIn message and email, and the same drafts are staged under `OUTREACH_DIR`.
 
 ## Command-line use
 

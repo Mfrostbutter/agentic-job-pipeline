@@ -169,6 +169,7 @@ def leads_outreach_status() -> dict:
 # at the router level so n8n callers and the SPA both go through one auth path.
 
 app.include_router(jobs_api.router, dependencies=[Depends(require_bearer)])
+app.include_router(leads_api.router, dependencies=[Depends(require_bearer)])
 
 
 @app.get("/jobs/ui", include_in_schema=False)
@@ -179,4 +180,14 @@ def jobs_ui() -> FileResponse:
     html_path = STATIC_DIR / "jobs_ui.html"
     if not html_path.is_file():
         raise HTTPException(status_code=500, detail="jobs_ui.html not found")
+    return FileResponse(str(html_path), media_type="text/html")
+
+
+@app.get("/leads/ui", include_in_schema=False)
+def leads_ui() -> FileResponse:
+    """Serve the recruiter-mode leads dashboard SPA. Same client-side token
+    gating as /jobs/ui; every /leads/api/* call is bearer-checked server-side."""
+    html_path = STATIC_DIR / "leads_ui.html"
+    if not html_path.is_file():
+        raise HTTPException(status_code=500, detail="leads_ui.html not found")
     return FileResponse(str(html_path), media_type="text/html")

@@ -111,12 +111,23 @@
       }
     },
     {
-      "parameters": {},
-      "id": "2f667dfc-da8f-43e0-a069-a702d5fdf5a8",
-      "name": "Skip Existing",
-      "type": "n8n-nodes-base.noOp",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO seen_leads (lead_id, source, status, first_seen, last_seen, times_seen)\nVALUES ($1, $2, 'seen', NOW(), NOW(), 1)\nON CONFLICT (lead_id) DO UPDATE SET last_seen = NOW(), times_seen = seen_leads.times_seen + 1;",
+        "options": {
+          "queryReplacement": "={{ (() => { const d = $('Dedup and Score').all().find(x => String(x.json.sourceId) === String($json.source_id))?.json || {}; return [ String($json.source_id), String(d.source||'').toLowerCase() ]; })() }}"
+        }
+      },
+      "id": "e1c9a4d2-3b7f-4a06-9d21-0f5c8b6e7a10",
+      "name": "Touch Seen Lead",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
       "position": [992, 960],
-      "typeVersion": 1
+      "credentials": {
+        "postgres": {
+          "name": "Job Pipeline Postgres"
+        }
+      }
     },
     {
       "parameters": {
@@ -497,7 +508,7 @@
     "Is New Job?": {
       "main": [
         [{ "node": "Create Jobs Record", "type": "main", "index": 0 }],
-        [{ "node": "Skip Existing", "type": "main", "index": 0 }]
+        [{ "node": "Touch Seen Lead", "type": "main", "index": 0 }]
       ]
     },
     "Filter Already Seen": {

@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Leads - Recruiter Mode</title>
+<!--
+  Recruiter-mode leads dashboard. Single file, no build step.
+  All API calls go to /leads/api/* (bearer) plus POST /leads/outreach for batch
+  drafting. Token is stored in localStorage under 'jobpipeline_token', shared
+  with the job UI and the scrape forms.
+-->
+<script src="https://cdn.tailwindcss.com"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.3/dist/cdn.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+<style>
+  [x-cloak] { display: none !important; }
+  body { font-family: ui-sans-serif, system-ui, sans-serif; background: #f7f7f8; color: #18181b; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .prose-sm :where(p){margin:.4rem 0} .prose-sm :where(h1,h2,h3){font-weight:600;margin:.6rem 0 .3rem}
+  .drawer { transition: transform .18s ease; }
+</style>
+</head>
+<body>
+<div x-data="leadsApp()" x-cloak x-init="init()">
+
+  <!-- Token gate -->
+  <template x-if="!token">
+    <div class="min-h-screen flex items-center justify-center p-4">
+      <div class="w-full max-w-sm bg-white border border-gray-200 rounded-lg shadow-sm p-6">
+        <h2 class="text-base font-semibold mb-1">Bearer token required</h2>
+        <p class="text-sm text-gray-500 mb-4">Paste your <code class="mono text-xs bg-gray-100 px-1.5 py-0.5 rounded">API_BEARER_TOKEN</code>. Stored only in this browser.</p>
+        <input type="password" x-model="tokenInput" @keydown.enter="saveToken()"
+               class="w-full text-sm border border-gray-300 rounded-md px-3 py-2 mono" placeholder="paste token..." />
+        <button @click="saveToken()" class="mt-3 w-full bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-md px-4 py-2">Load</button>
+      </div>
+    </div>
+  </template>
+
+  <template x-if="token">
+    <div class="max-w-7xl mx-auto p-4 sm:p-6">
+
+      <!-- Header -->
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <div>
+          <h1 class="text-lg font-semibold">Recruiter leads</h1>
+          <p class="text-xs text-gray-500">Aging-listings prospects. Flag the ones worth pursuing, then draft outreach.</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <button @click="draftOutreach()" :disabled="drafting || flaggedCount === 0"
+                  class="inline-flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white text-sm font-medium rounded-md px-3 py-2">
+            <svg x-show="drafting" class="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.5" opacity="0.25"/><path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="2.5"/></svg>
+            <span x-text="drafting ? 'Drafting...' : ('Draft outreach (' + flaggedCount + ')')"></span>
+          </button>
+          <button @click="refresh()" class="text-sm border border-gray-300 rounded-md px-3 py-2 hover:bg-gray-50">Refresh</button>
+          <button @click="clearToken()" class="text-xs text-gray-400 hover:text-gray-600 px-2">Clear token</button>
+        </div>
+      </div>
+
+      <!-- Stats -->
+      <div class="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-4">
+        <template x-for="s in statCards" :key="s.key">
+          <div class="bg-white border border-gray-200 rounded-lg px-3 py-2">
+            <div class="text-xl font-semibold" x-text="stats[s.key] ?? '-'"></div>
+            <div class="text-[11px] text-gray-500" x-text="s.label"></div>
+          </div>
+        </template>
+      </div>
+
+      <!-- Filters -->
+      <div class="flex flex-wrap items-end gap-3 mb-3">
+        <div>
+          <label class="block text-[11px] text-gray-500 mb-0.5">Tier</label>
+          <select x-model="filters.tier" @change="load()" class="text-sm border border-gray-300 rounded-md px-2 py-1.5 bg-white">
+            <option value="all">All</option><option>Top Tier</option><option>Second Choice</option><option>Reject</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-[11px] text-gray-500 mb-0.5">Status</label>
+          <select x-model="filters.status" @change="load()" class="text-sm border border-gray-300 rounded-md px-2 py-1.5 bg-white">
+            <option value="all">All</option><option>New</option><option>Contacted</option><option>Replied</option><option>Won</option><option>Lost</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-[11px] text-gray-500 mb-0.5">Campaign</label>
+          <input x-model.debounce.400ms="filters.campaign" @input="load()" placeholder="all"
+                 class="text-sm border border-gray-300 rounded-md px-2 py-1.5 w-48" />
+        </div>
+        <div class="flex-1"></div>
+        <input x-model="search" placeholder="filter by role / company..." class="text-sm border border-gray-300 rounded-md px-3 py-1.5 w-64" />
+        <button @click="purgeRejects()" class="text-xs text-red-600 border border-red-200 rounded-md px-2 py-1.5 hover:bg-red-50">Purge rejects</button>
+      </div>
+
+      <!-- Table -->
+      <div class="bg-white border border-gray-200 rounded-lg overflow-hidden">
+        <table class="w-full text-sm">
+          <thead class="bg-gray-50 text-gray-500 text-xs">
+            <tr>
+              <th class="text-left font-medium px-3 py-2 cursor-pointer" @click="sortBy('lead_score')">Score</th>
+              <th class="text-left font-medium px-3 py-2 cursor-pointer" @click="sortBy('posting_age_days')">Age (d)</th>
+              <th class="text-left font-medium px-3 py-2">Role</th>
+              <th class="text-left font-medium px-3 py-2">Company</th>
+              <th class="text-left font-medium px-3 py-2">Tier</th>
+              <th class="text-left font-medium px-3 py-2">Status</th>
+              <th class="text-center font-medium px-3 py-2">Draft?</th>
+              <th class="text-center font-medium px-3 py-2">Done</th>
+            </tr>
+          </thead>
+          <tbody>
+            <template x-for="l in visibleLeads" :key="l.record_id">
+              <tr class="border-t border-gray-100 hover:bg-indigo-50/40 cursor-pointer" @click="openDetail(l)">
+                <td class="px-3 py-2 font-semibold" x-text="l.score ?? '-'"></td>
+                <td class="px-3 py-2" x-text="l.posting_age_days ?? '-'"></td>
+                <td class="px-3 py-2" x-text="l.role_title"></td>
+                <td class="px-3 py-2 text-gray-600" x-text="l.company"></td>
+                <td class="px-3 py-2">
+                  <span class="text-[11px] px-1.5 py-0.5 rounded"
+                        :class="{'bg-emerald-100 text-emerald-700': l.tier==='Top Tier','bg-amber-100 text-amber-700': l.tier==='Second Choice','bg-gray-100 text-gray-500': l.tier==='Reject' || !l.tier}"
+                        x-text="l.tier || 'untriaged'"></span>
+                </td>
+                <td class="px-3 py-2 text-gray-600" x-text="l.status"></td>
+                <td class="px-3 py-2 text-center" @click.stop>
+                  <input type="checkbox" :checked="l.build_outreach" @change="toggleFlag(l, $event.target.checked)"
+                         :disabled="l.outreach_created" class="rounded border-gray-300" />
+                </td>
+                <td class="px-3 py-2 text-center">
+                  <span x-show="l.outreach_created" class="text-emerald-600" title="Outreach drafted">&#10003;</span>
+                </td>
+              </tr>
+            </template>
+            <tr x-show="!loading && visibleLeads.length === 0">
+              <td colspan="8" class="px-3 py-8 text-center text-gray-400">No leads. Run a scan from the recruiter form.</td>
+            </tr>
+          </tbody>
+        </table>
+        <div x-show="loading" class="px-3 py-8 text-center text-gray-400 text-sm">Loading...</div>
+      </div>
+
+      <div class="mt-2 text-xs" :class="msgKind==='error' ? 'text-red-600' : 'text-gray-500'" x-text="msg"></div>
+
+      <!-- Detail drawer -->
+      <div x-show="detail" x-cloak class="fixed inset-0 z-40" @keydown.escape.window="detail=null">
+        <div class="absolute inset-0 bg-black/30" @click="detail=null"></div>
+        <div class="drawer absolute right-0 top-0 h-full w-full max-w-2xl bg-white shadow-xl overflow-y-auto">
+          <template x-if="detail">
+            <div class="p-6 space-y-5">
+              <div class="flex items-start justify-between gap-4">
+                <div>
+                  <h2 class="text-lg font-semibold" x-text="detail.role_title"></h2>
+                  <p class="text-sm text-gray-500">
+                    <span x-text="detail.company"></span> &middot;
+                    <span x-text="detail.location"></span> &middot;
+                    <span x-text="'open ~' + (detail.posting_age_days ?? '?') + 'd'"></span> &middot;
+                    <span x-text="'score ' + (detail.score ?? '-')"></span>
+                  </p>
+                  <a :href="detail.url" x-show="detail.url" target="_blank" class="text-xs text-indigo-600 hover:underline">View posting</a>
+                </div>
+                <button @click="detail=null" class="text-gray-400 hover:text-gray-700 text-xl leading-none">&times;</button>
+              </div>
+
+              <div class="grid grid-cols-2 gap-3">
+                <div>
+                  <label class="block text-[11px] text-gray-500 mb-0.5">Tier</label>
+                  <select x-model="detail.tier" @change="patch(detail,{tier:detail.tier})" class="w-full text-sm border border-gray-300 rounded-md px-2 py-1.5 bg-white">
+                    <option value="">untriaged</option><option>Top Tier</option><option>Second Choice</option><option>Reject</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="block text-[11px] text-gray-500 mb-0.5">Status</label>
+                  <select x-model="detail.status" @change="patch(detail,{status:detail.status})" class="w-full text-sm border border-gray-300 rounded-md px-2 py-1.5 bg-white">
+                    <option>New</option><option>Contacted</option><option>Replied</option><option>Won</option><option>Lost</option><option>Archived</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="block text-[11px] text-gray-500 mb-0.5">Contact name</label>
+                  <input x-model="detail.contact_name" @change="patch(detail,{contact_name:detail.contact_name})" class="w-full text-sm border border-gray-300 rounded-md px-2 py-1.5" />
+                </div>
+                <div>
+                  <label class="block text-[11px] text-gray-500 mb-0.5">Contact handle / email</label>
+                  <input x-model="detail.contact_handle" @change="patch(detail,{contact_handle:detail.contact_handle})" class="w-full text-sm border border-gray-300 rounded-md px-2 py-1.5" />
+                </div>
+              </div>
+
+              <div x-show="detail.angle" class="rounded-md bg-indigo-50 border border-indigo-100 px-3 py-2 text-sm text-indigo-900">
+                <span class="font-medium">Angle:</span> <span x-text="detail.angle"></span>
+              </div>
+
+              <label class="flex items-center gap-2 text-sm">
+                <input type="checkbox" :checked="detail.build_outreach" @change="toggleFlag(detail, $event.target.checked)" :disabled="detail.outreach_created" class="rounded border-gray-300" />
+                Flag for outreach drafting
+                <span x-show="detail.outreach_created" class="text-xs text-emerald-600">(drafted)</span>
+              </label>
+
+              <!-- Drafted outreach -->
+              <div x-show="detail.outreach && (detail.outreach.linkedin || detail.outreach.email_body)" class="space-y-3">
+                <div class="border border-gray-200 rounded-md">
+                  <div class="flex items-center justify-between px-3 py-2 bg-gray-50 text-xs font-medium text-gray-600">
+                    <span>LinkedIn message</span>
+                    <button @click="copy(detail.outreach.linkedin)" class="text-indigo-600 hover:underline">Copy</button>
+                  </div>
+                  <pre class="whitespace-pre-wrap text-sm px-3 py-2" x-text="detail.outreach.linkedin"></pre>
+                </div>
+                <div class="border border-gray-200 rounded-md">
+                  <div class="flex items-center justify-between px-3 py-2 bg-gray-50 text-xs font-medium text-gray-600">
+                    <span x-text="'Email: ' + (detail.outreach.email_subject || '')"></span>
+                    <button @click="copy((detail.outreach.email_subject||'') + '\n\n' + (detail.outreach.email_body||''))" class="text-indigo-600 hover:underline">Copy</button>
+                  </div>
+                  <pre class="whitespace-pre-wrap text-sm px-3 py-2" x-text="detail.outreach.email_body"></pre>
+                </div>
+              </div>
+
+              <!-- Score breakdown + JD -->
+              <details class="text-sm">
+                <summary class="cursor-pointer text-gray-500">Score breakdown</summary>
+                <pre class="whitespace-pre-wrap text-xs bg-gray-50 rounded-md p-3 mt-2" x-text="detail.breakdown || '(none)'"></pre>
+              </details>
+              <details class="text-sm">
+                <summary class="cursor-pointer text-gray-500">Job description</summary>
+                <div class="prose-sm text-sm mt-2 border border-gray-100 rounded-md p-3 max-h-96 overflow-y-auto" x-html="renderMd(detail.description)"></div>
+              </details>
+
+              <div class="pt-2 border-t border-gray-100">
+                <button @click="del(detail)" class="text-xs text-red-600 hover:underline">Delete lead</button>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+
+    </div>
+  </template>
+</div>
+
+<script>
+  function leadsApp() {
+    return {
+      token: '', tokenInput: '',
+      leads: [], stats: {}, detail: null,
+      loading: false, drafting: false,
+      msg: '', msgKind: '',
+      search: '',
+      sort: { key: 'lead_score', dir: -1 },
+      filters: { tier: 'all', status: 'all', campaign: '' },
+      statCards: [
+        { key: 'new_last_7d', label: 'new (7d)' },
+        { key: 'to_triage', label: 'to triage' },
+        { key: 'queued_for_outreach', label: 'flagged' },
+        { key: 'drafted_awaiting_send', label: 'drafted' },
+        { key: 'contacted_last_30d', label: 'contacted (30d)' },
+      ],
+
+      init() {
+        this.token = localStorage.getItem('jobpipeline_token') || '';
+        if (this.token) this.refresh();
+      },
+      saveToken() {
+        const t = (this.tokenInput || '').trim();
+        if (!t) return;
+        this.token = t; localStorage.setItem('jobpipeline_token', t); this.tokenInput = '';
+        this.refresh();
+      },
+      clearToken() { this.token = ''; localStorage.removeItem('jobpipeline_token'); },
+
+      get flaggedCount() { return this.leads.filter(l => l.build_outreach && !l.outreach_created).length; },
+      get visibleLeads() {
+        let rows = this.leads.slice();
+        const q = (this.search || '').toLowerCase().trim();
+        if (q) rows = rows.filter(l => ((l.role_title||'') + ' ' + (l.company||'')).toLowerCase().includes(q));
+        const k = this.sort.key, d = this.sort.dir;
+        rows.sort((a, b) => (((a[k] ?? -1) - (b[k] ?? -1)) * d));
+        return rows;
+      },
+      sortBy(k) { this.sort.dir = (this.sort.key === k) ? -this.sort.dir : -1; this.sort.key = k; },
+
+      async api(method, path, body) {
+        const opts = { method, headers: { 'Authorization': 'Bearer ' + this.token } };
+        if (body !== undefined) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+        const resp = await fetch(path, opts);
+        if (resp.status === 401 || resp.status === 403) { this.setMsg('Auth rejected. Re-enter token.', 'error'); this.clearToken(); throw new Error('auth'); }
+        const text = await resp.text();
+        let data = null; try { data = text ? JSON.parse(text) : null; } catch (e) {}
+        if (!resp.ok) { throw new Error((data && (data.detail?.detail || data.detail || data.message)) || ('HTTP ' + resp.status)); }
+        return data;
+      },
+
+      async refresh() { await Promise.all([this.load(), this.loadStats()]); },
+      async loadStats() { try { this.stats = await this.api('GET', '/leads/api/stats'); } catch (e) {} },
+      async load() {
+        this.loading = true;
+        try {
+          const qs = new URLSearchParams({ tier: this.filters.tier, status: this.filters.status, limit: 500 });
+          if (this.filters.campaign.trim()) qs.set('campaign', this.filters.campaign.trim());
+          this.leads = await this.api('GET', '/leads/api/leads?' + qs.toString());
+          this.setMsg(this.leads.length + ' leads', '');
+        } catch (e) { this.setMsg('Load failed: ' + e.message, 'error'); }
+        finally { this.loading = false; }
+      },
+
+      async openDetail(l) {
+        try { this.detail = await this.api('GET', '/leads/api/leads/' + l.record_id); }
+        catch (e) { this.setMsg('Detail failed: ' + e.message, 'error'); }
+      },
+      async patch(l, body) {
+        try {
+          const updated = await this.api('PATCH', '/leads/api/leads/' + l.record_id, body);
+          this._merge(updated);
+        } catch (e) { this.setMsg('Update failed: ' + e.message, 'error'); }
+      },
+      async toggleFlag(l, checked) { await this.patch(l, { build_outreach: !!checked }); },
+      _merge(updated) {
+        const i = this.leads.findIndex(x => x.record_id === updated.record_id);
+        if (i >= 0) this.leads[i] = { ...this.leads[i], ...updated };
+        if (this.detail && this.detail.record_id === updated.record_id) this.detail = { ...this.detail, ...updated };
+      },
+      async del(l) {
+        if (!confirm('Delete this lead?')) return;
+        try { await this.api('DELETE', '/leads/api/leads/' + l.record_id); this.detail = null; await this.refresh(); }
+        catch (e) { this.setMsg('Delete failed: ' + e.message, 'error'); }
+      },
+      async purgeRejects() {
+        if (!confirm('Delete every Reject-tier lead? Irreversible.')) return;
+        try { const r = await this.api('POST', '/leads/api/leads/purge-rejects'); this.setMsg('Deleted ' + (r.deleted ?? 0) + ' rejects', ''); await this.refresh(); }
+        catch (e) { this.setMsg('Purge failed: ' + e.message, 'error'); }
+      },
+      async draftOutreach() {
+        if (this.flaggedCount === 0) return;
+        this.drafting = true; this.setMsg('Drafting outreach for ' + this.flaggedCount + ' leads (can take a minute each)...', '');
+        try {
+          const r = await this.api('POST', '/leads/outreach', {});
+          if (r && r.error) this.setMsg('Outreach error: ' + r.error, 'error');
+          else this.setMsg('Drafted ' + (r?.drafted ?? 0) + ' packages' + (r?.failed ? (', ' + r.failed + ' failed') : '') + '. Staged for CRM/email import.', '');
+          await this.refresh();
+        } catch (e) { this.setMsg('Draft failed: ' + e.message, 'error'); }
+        finally { this.drafting = false; }
+      },
+
+      renderMd(s) { try { return DOMPurify.sanitize(marked.parse(s || '')); } catch (e) { return ''; } },
+      copy(s) { navigator.clipboard?.writeText(s || ''); this.setMsg('Copied', ''); },
+      setMsg(m, k) { this.msg = m; this.msgKind = k; },
+    };
+  }
+</script>
+</body>
+</html>

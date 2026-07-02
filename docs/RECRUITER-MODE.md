@@ -21,6 +21,8 @@ weeks tells you a company is *struggling* to hire, which is exactly when a
 recruiter is worth a conversation. Aging-listings mode scrapes wide, drops
 anything too fresh, and ranks what remains by how long it has been open.
 
+![Recruiter aging-listings workflow](https://raw.githubusercontent.com/Mfrostbutter/agentic-job-pipeline/main/docs/screenshots/workflow-recruiter.png)
+
 ## The pieces (parallel to job-search mode)
 
 | Job-search mode | Recruiter (aging-listings) mode |

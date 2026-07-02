@@ -1,0 +1,525 @@
+{
+  "name": "Recruiter Lead Finder - Aging Listings (Form)",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "// ===== RECRUITER LEAD CONFIG (AGING LISTINGS, CUSTOM FORM) =====\n// Premise: surface job postings that have been open a long time as recruiter\n// leads. A long-open role is a company that needs help filling it. Driven by\n// the webhook POST body; emits one { json: config } for the scraper chain.\n\nconst trigger = $input.first().json || {};\nconst body = (trigger.body && typeof trigger.body === 'object') ? trigger.body : trigger;\nfunction fail(msg) { throw new Error('Recruiter lead config error: ' + msg); }\n\n// niche the recruiter places for -> scrape queries + title-match anchors\nlet keywordList = [];\nif (Array.isArray(body.niche_keywords)) keywordList = body.niche_keywords.map(k => String(k||'').trim()).filter(Boolean);\nelse if (typeof body.niche_keywords === 'string') keywordList = body.niche_keywords.split(',').map(s=>s.trim()).filter(Boolean);\nif (keywordList.length === 0 && typeof body.keywords === 'string') keywordList = body.keywords.split(',').map(s=>s.trim()).filter(Boolean);\nif (keywordList.length === 0) fail('niche_keywords is required (comma-separated string or array)');\nif (keywordList.length > 20) fail('niche_keywords too long (max 20)');\n\nconst location = String(body.location || '').trim();\nif (!location) fail('location is required');\n\nconst workplaceRaw = String(body.workplace_type || 'any').toLowerCase().trim();\nlet workTypes;\nif (workplaceRaw === 'remote') workTypes = ['remote'];\nelse if (workplaceRaw === 'hybrid') workTypes = ['hybrid'];\nelse if (workplaceRaw === 'on-site' || workplaceRaw === 'onsite') workTypes = ['onsite'];\nelse workTypes = ['remote', 'hybrid'];\n\n// staleness floor: only postings at least this old count as leads\nconst minAgeWeeks = Math.max(1, Math.min(26, Number(body.min_posting_age_weeks) || 4));\nconst minPostingAgeDays = minAgeWeeks * 7;\nconst excludeStaffing = body.exclude_staffing_firms === undefined ? true : !!body.exclude_staffing_firms;\n\nconst pages = Math.max(1, Math.min(5, Number(body.pages) || 3));\nconst maxResultsPerSearch = pages * 25;\nconst campaignLabel = String(body.campaign_label || body.run_label || '').trim().slice(0, 80);\n\n// Find AGING roles: use the widest window LinkedIn exposes, then rank by age.\n// LinkedIn's date filter caps around past_month; observed persistence\n// (times_seen in seen_leads across repeated scans) is the durable signal.\nconst datePosted = 'past_month';\n\nconst HARD_QUERY_CAP = 10;\nif (keywordList.length * workTypes.length > HARD_QUERY_CAP) {\n  const maxKw = Math.max(1, Math.floor(HARD_QUERY_CAP / workTypes.length));\n  keywordList = keywordList.slice(0, maxKw);\n}\n\nconst config = {\n  workflowScope: 'recruiter_leads',\n  _campaignLabel: campaignLabel,\n  _minPostingAgeDays: minPostingAgeDays,\n  _excludeStaffing: excludeStaffing,\n  _customRequest: { niche_keywords: keywordList, location, workplace_type: workplaceRaw, min_posting_age_weeks: minAgeWeeks, pages, campaign_label: campaignLabel },\n  indeedSearches: [],\n  linkedinSearches: [],\n  datePosted,\n  maxResultsPerSearch,\n  includeComparisonWindow: false,\n  comparisonMaxResults: 0,\n  fetchFullDescription: true,\n  enrichWithAI: false,\n  linkedinCookie: $env.LINKEDIN_COOKIE || '',\n  actorProxyConfig: {},\n  runGuardEnabled: false,\n  runGuardMinMinutes: 0,\n  maxQueriesPerRun: HARD_QUERY_CAP,\n  safeMode: false, safeMaxQueries: 2, safeMaxResults: 10, safeFetchFullDescription: true,\n  testMode: false, testMaxQueries: 2, testMaxResults: 10, testFetchFullDescription: false,\n  scoring: {\n    minPostingAgeDays,\n    excludeStaffing,\n    nicheKeywords: keywordList,\n    seniorityWords: ['chief','vp','vice president','director','head of','senior director','principal','staff','lead','senior','sr.','sr '],\n    hiringIntentKeywords: ['urgently hiring','urgent','immediate','immediately','multiple openings','several openings','actively hiring','fast-growing','fast growing','rapidly growing','backfill','reposted'],\n    staffingFirmTerms: ['staffing','recruiting','recruitment','talent solutions','talent partners','search partners','executive search','consultants','consulting group','headhunt','staffing agency','rpo'],\n    noAgencyTerms: ['no agencies','no recruiters','direct applicants only','direct hire only','principals only'],\n    highLeadThreshold: 50\n  },\n  slackWebhookUrl: $env.SLACK_WEBHOOK_URL || ''\n};\n\nconst searches = [];\nfor (const kw of keywordList) {\n  for (const wt of workTypes) {\n    searches.push({ keywords: kw, location, workType: wt, datePosted, maxResults: maxResultsPerSearch, scope: 'recruiter_leads', planId: 'lead_' + (campaignLabel||'unlabeled').replace(/[^a-z0-9_-]/gi,'_'), windowId: 'primary' });\n  }\n}\nconfig.linkedinSearches = searches.slice(0, HARD_QUERY_CAP);\nconfig._abortRun = false;\nconfig._abortReason = '';\nreturn [{ json: config }];\n"
+      },
+      "id": "3b4409ee-6e72-458a-b1cc-748946cd5e85",
+      "name": "Config",
+      "type": "n8n-nodes-base.code",
+      "position": [640, 304],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "jsCode": "// Split LinkedIn searches into individual items\nconst config = $input.first().json;\n\nif (config._abortRun) {\n  console.log(config._abortReason || 'Run aborted by guard.');\n  return [];\n}\n\nconst scope = config.workflowScope || 'default';\nconst staticData = $getWorkflowStaticData('global');\n\n// Guard 1: never emit twice within the same execution\nconst execGuardKey = `splitLastExecutionId_${scope}`;\nconst currentExecutionId = String($execution.id || '');\nif (staticData[execGuardKey] === currentExecutionId) {\n  return [];\n}\nstaticData[execGuardKey] = currentExecutionId;\n\nconst searches = Array.isArray(config.linkedinSearches) ? config.linkedinSearches : [];\n\n// Safety dedupe in case upstream config accidentally repeats query tuples\nconst seen = new Set();\nconst uniqueSearches = [];\nfor (const search of searches) {\n  const key = [\n    search.keywords,\n    search.location,\n    search.workType,\n    search.datePosted,\n    search.windowId || 'primary'\n  ]\n    .map(v => String(v || '').toLowerCase().trim())\n    .join('|');\n\n  if (seen.has(key)) continue;\n  seen.add(key);\n  uniqueSearches.push(search);\n}\n\n// Guard 2 (global fail-safe): max 10 actor calls per role per 15-minute window\nconst HARD_MAX_QUERIES = 10;\nconst BUDGET_WINDOW_MINUTES = 15;\nconst budgetKey = `splitBudget_${scope}`;\nconst now = Date.now();\nlet budget = staticData[budgetKey] || { windowStartMs: now, count: 0 };\n\nconst windowMs = BUDGET_WINDOW_MINUTES * 60 * 1000;\nif (!budget.windowStartMs || (now - Number(budget.windowStartMs)) >= windowMs) {\n  budget = { windowStartMs: now, count: 0 };\n}\n\nconst configuredMax = Math.max(1, Number(config.maxQueriesPerRun ?? HARD_MAX_QUERIES));\nconst remainingBudget = Math.max(0, HARD_MAX_QUERIES - Number(budget.count || 0));\nconst effectiveMax = Math.min(HARD_MAX_QUERIES, configuredMax, remainingBudget);\n\nif (effectiveMax <= 0) {\n  return [];\n}\n\nconst finalSearches = uniqueSearches.slice(0, effectiveMax);\n\nbudget.count = Number(budget.count || 0) + finalSearches.length;\nstaticData[budgetKey] = budget;\n\nreturn finalSearches.map((search, idx) => ({\n  json: {\n    ...search,\n    _queryIndex: idx + 1,\n    _queryCount: finalSearches.length,\n    fetchFullDescription: typeof search.fetchFullDescription === 'boolean'\n      ? search.fetchFullDescription\n      : !!config.fetchFullDescription,\n    enrichWithAI: !!config.enrichWithAI,\n    linkedinCookie: config.linkedinCookie || '',\n    actorProxyConfig: config.actorProxyConfig || {},\n    _config: config,\n  }\n}));"
+      },
+      "id": "c005c05a-0edf-4b4e-9594-7b7c0c6ffeeb",
+      "name": "Split LinkedIn Queries",
+      "type": "n8n-nodes-base.code",
+      "position": [816, 304],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize Mfrostbutter/linkedin-jobs-scraper output to unified job schema\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const d = item.json;\n  // Our actor always emits title + companyName; skip empty records\n  if (!d || !d.title) continue;\n\n  const loc = d.location || '';\n  const workplaceType = d.workRemoteAllowed\n    ? (d.workplaceTypes && d.workplaceTypes[0]) || 'Remote'\n    : 'On-site';\n\n  // salary_low/salary_high come from parser; salary is the raw string\n  let salaryMin = d.salary_low || null;\n  let salaryMax = d.salary_high || null;\n\n  // Carry config forward when available. Actor dataset items usually drop upstream fields,\n  // so fallback to Config node when this workflow path includes it.\n  let cfg = item.json._config;\n  if (!cfg) {\n    try {\n      cfg = $('Config').first()?.json || null;\n    } catch (e) {\n      cfg = null;\n    }\n  }\n\n  results.push({\n    jobTitle: d.title || '',\n    company: d.companyName || '',\n    location: loc,\n    source: 'LinkedIn',\n    sourceId: d.id || `li-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,\n    sourceUrl: d.link || d.applyUrl || '',\n    postedDate: d.postedAt || new Date().toISOString(),\n    salaryMin: salaryMin,\n    salaryMax: salaryMax,\n    employmentType: 'Full-time',\n    workplaceType: workplaceType,\n    companySize: '',\n    companyIndustry: '',\n    descriptionSnippet: (d.descriptionText || '').substring(0, 500),\n    fullDescription: d.descriptionText || '',\n    easyApply: false,\n    applicants: null,\n    _config: cfg,\n  });\n}\n\nreturn results.map(r => ({ json: r }));"
+      },
+      "id": "b903f0df-a3fb-416e-921c-18c4f2fcf263",
+      "name": "Normalize LinkedIn",
+      "type": "n8n-nodes-base.code",
+      "position": [320, 832],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== DEDUP + LEAD SCORE (AGING LISTINGS) =====\n// Dedup within the batch, DROP postings younger than the staleness floor and\n// staffing/recruiting firms, then score the rest as recruiter leads.\n// Older + harder-to-fill + on-niche + hiring-intent = higher lead score.\n\nconst items = $input.all();\n\nconst DEFAULT = {\n  minPostingAgeDays: 28, excludeStaffing: true, nicheKeywords: [],\n  seniorityWords: ['chief','vp','vice president','director','head of','senior director','principal','staff','lead','senior'],\n  hiringIntentKeywords: ['urgently hiring','urgent','immediate','multiple openings','actively hiring','fast-growing','reposted','backfill'],\n  staffingFirmTerms: ['staffing','recruiting','recruitment','talent solutions','executive search','consultants','headhunt','rpo'],\n  noAgencyTerms: ['no agencies','no recruiters','direct applicants only','principals only'],\n  highLeadThreshold: 50\n};\nconst cfg = (items[0]?.json?._config?.scoring && typeof items[0].json._config.scoring === 'object') ? items[0].json._config.scoring : DEFAULT;\nconst carryConfig = items[0]?.json?._config || null;\n\nfunction ageDays(postedDate) {\n  if (!postedDate) return null;\n  const t = Date.parse(postedDate);\n  if (!Number.isFinite(t)) return null;\n  const d = Math.floor((Date.now() - t) / 86400000);\n  return d >= 0 ? d : null;\n}\n\n// dedup within batch by title + company\nconst seen = new Set();\nconst unique = [];\nfor (const item of items) {\n  const d = item.json;\n  const key = `${(d.jobTitle||'').toLowerCase().trim()}|${(d.company||'').toLowerCase().trim()}`;\n  if (seen.has(key)) continue;\n  seen.add(key);\n  unique.push(d);\n}\n\nfunction isStaffingFirm(company) {\n  const c = (company||'').toLowerCase();\n  return (cfg.staffingFirmTerms||[]).some(t => c.includes(t));\n}\n\nfunction scoreLead(job, age) {\n  const breakdown = [];\n  let score = 0;\n  const titleLower = (job.jobTitle||'').toLowerCase();\n  const descLower = (job.fullDescription||'').toLowerCase();\n\n  // Staleness (primary). Older = better. ~5 pts/week, capped at 45.\n  const weeks = age / 7;\n  const stale = Math.min(45, Math.round(weeks * 5));\n  score += stale;\n  breakdown.push('Aging posting (' + age + 'd, ~' + weeks.toFixed(1) + 'w): +' + stale);\n\n  const niche = (cfg.nicheKeywords||[]).map(k => String(k).toLowerCase());\n  if (niche.some(k => k && titleLower.includes(k))) { score += 25; breakdown.push('Niche title match: +25'); }\n  if ((cfg.seniorityWords||[]).some(w => titleLower.includes(w))) { score += 10; breakdown.push('Senior / hard-to-fill: +10'); }\n  if ((cfg.hiringIntentKeywords||[]).some(k => descLower.includes(k))) { score += 10; breakdown.push('Hiring-intent signal: +10'); }\n\n  const sizeMatch = (job.companySize||'').replace(/,/g,'').match(/(\\d+)/);\n  if (sizeMatch) { const s = parseInt(sizeMatch[1]); if (s>=50 && s<=2000) { score += 10; breakdown.push('Mid-market size: +10'); } }\n\n  if ((cfg.noAgencyTerms||[]).some(k => descLower.includes(k))) { score -= 30; breakdown.push('Says no agencies: -30'); }\n\n  return { leadScore: Math.max(0, Math.min(100, score)), scoreBreakdown: JSON.stringify(breakdown) };\n}\n\nconst minAge = Number(cfg.minPostingAgeDays || 28);\nconst out = [];\nfor (const job of unique) {\n  const age = ageDays(job.postedDate);\n  if (age == null || age < minAge) continue;              // staleness floor\n  if (cfg.excludeStaffing && isStaffingFirm(job.company)) continue; // skip competitors\n  const s = scoreLead(job, age);\n  out.push({ json: {\n    ...job,\n    ...s,\n    postingAgeDays: age,\n    roleTitle: job.jobTitle || '',\n    isHighLead: s.leadScore >= Number(cfg.highLeadThreshold || 50),\n    firstSeen: new Date().toISOString(),\n    lastSeen: new Date().toISOString(),\n    status: 'New',\n    _config: carryConfig,\n  }});\n}\n\nout.sort((a,b) => b.json.leadScore - a.json.leadScore);\nreturn out;\n"
+      },
+      "id": "0b53ddcd-d48a-4a35-8148-bf3e1e6c0168",
+      "name": "Dedup and Score",
+      "type": "n8n-nodes-base.code",
+      "position": [480, 832],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=SELECT '{{ $json.sourceId }}'::text AS source_id, EXISTS(SELECT 1 FROM seen_leads WHERE lead_id = '{{ $json.sourceId }}') AS already_seen;",
+        "options": {}
+      },
+      "id": "44f31be9-dd09-49d6-9acf-7a65ef6c185a",
+      "name": "Filter Already Seen",
+      "type": "n8n-nodes-base.postgres",
+      "position": [688, 880],
+      "typeVersion": 2.6,
+      "credentials": {
+        "postgres": {
+          "name": "Job Pipeline Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "cond-is-new-pg",
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.already_seen }}",
+              "rightValue": ""
+            }
+          ]
+        },
+        "options": {
+          "looseTypeValidation": true
+        }
+      },
+      "id": "7c65b76d-bee2-4b47-8457-c67dfe5f6e9c",
+      "name": "Is New Job?",
+      "type": "n8n-nodes-base.if",
+      "position": [816, 880],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO leads (lead_id, role_title, company, location, source_url, workplace, status, lead_score, breakdown, posting_age_days, campaign_label, description)\nVALUES ($1,$2,$3,$4,$5,$6,'New',$7,$8,$9,$10,$11)\nON CONFLICT (lead_id) DO NOTHING\nRETURNING lead_id;",
+        "options": {
+          "queryReplacement": "={{ (() => { const d = $('Dedup and Score').all().find(x => String(x.json.sourceId) === String($json.source_id))?.json || {}; const cl = ($('Config').first()?.json?._campaignLabel || ''); return [ String(d.sourceId||''), d.roleTitle||d.jobTitle||'', d.company||'', d.location||'', d.sourceUrl||'', d.workplaceType||'', Number(d.leadScore||0), d.scoreBreakdown||'', (d.postingAgeDays==null?null:Number(d.postingAgeDays)), cl, d.fullDescription||'' ]; })() }}"
+        }
+      },
+      "id": "f9f1837e-0b90-4142-9910-2c7045f375f2",
+      "name": "Create Jobs Record",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [992, 800],
+      "credentials": {
+        "postgres": {
+          "name": "Job Pipeline Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "2f667dfc-da8f-43e0-a069-a702d5fdf5a8",
+      "name": "Skip Existing",
+      "type": "n8n-nodes-base.noOp",
+      "position": [992, 960],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\nlet cfg = items[0]?.json?._config || null;\nif (!cfg) { try { cfg = $('Dedup and Score').first()?.json?._config || null; } catch {} }\n// Empty webhook URL = Slack disabled; the \"Has Notifications?\" gate then skips the post.\nconst slackWebhookUrl = cfg?.slackWebhookUrl || ($env.SLACK_WEBHOOK_URL || '');\n\nlet succeeded = 0;\nlet rateLimited = 0;\nlet otherFailed = 0;\nfor (const i of items) {\n  const j = i.json || {};\n  if (j.lead_id) succeeded += 1;\n  else if (Array.isArray(j.errors) && j.errors.some(e => (e.error||'').includes('RATE_LIMIT'))) rateLimited += 1;\n  else if (j.errors || j.error) otherFailed += 1;\n}\nconst total = items.length;\n// count drives the Slack gate: zero it out when Slack is disabled.\nconst count = slackWebhookUrl ? succeeded : 0;\n\nlet message;\nif (total === 0) {\n  message = 'No new aging-listing leads added.';\n} else if (rateLimited === 0 && otherFailed === 0) {\n  message = `${succeeded} new leads added.`;\n} else {\n  message = `Postgres: ${succeeded} leads added, ${rateLimited} rate-limited, ${otherFailed} other failed (out of ${total}).`;\n}\n\nreturn [{ json: { message, count, succeeded, rateLimited, otherFailed, total, slackWebhookUrl } }];\n"
+      },
+      "id": "ab7b338b-f3b2-4ae7-ac13-79a9af78ae69",
+      "name": "Build Notification",
+      "type": "n8n-nodes-base.code",
+      "position": [1328, 304],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "cond-has-jobs",
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              },
+              "leftValue": "={{ $json.count }}",
+              "rightValue": 0
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "643b5834-d32a-4ad2-8bdd-eadf919d3d33",
+      "name": "Has Notifications?",
+      "type": "n8n-nodes-base.if",
+      "position": [1488, 304],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.slackWebhookUrl || 'https://hooks.slack.com/services/DISABLED' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": {{ JSON.stringify($json.message || \"No message\") }},\n  \"mrkdwn\": true,\n  \"unfurl_links\": false,\n  \"unfurl_media\": false\n}\n",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "text",
+              "outputPropertyName": "=data"
+            }
+          }
+        }
+      },
+      "id": "540c4db4-e2da-4479-9fb6-4eb4140a74cd",
+      "name": "Send Slack Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [1696, 288],
+      "typeVersion": 4.2
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.apify.com/v2/acts/Mfrostbutter~linkedin-jobs-scraper/run-sync-get-dataset-items",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ (() => {\n  const idx = Number($json._queryIndex || 0);\n  if (idx > 10) throw new Error('Safety cap exceeded: query index ' + idx + ' > 10');\n  return {\n    keywords: $json.keywords,\n    location: $json.location,\n    workType: $json.workType,\n    datePosted: $json.datePosted,\n    maxResults: $json.maxResults,\n    fetchFullDescription: $json.fetchFullDescription,\n    proxyConfig: $json.actorProxyConfig || {},\n    _n8nQueryIndex: idx,\n    _n8nQueryCount: Number($json._queryCount || 0),\n    _n8nExecutionId: String($execution.id || ''),\n    _n8nWorkflowScope: String($json._config?.workflowScope || ''),\n  };\n})() }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 5000
+            }
+          },
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 300000
+        }
+      },
+      "id": "80f60982-6784-480b-b8db-5f3e550436a6",
+      "name": "Run Apify (HTTP Sync)",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [992, 304],
+      "typeVersion": 4.2,
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "Apify API (Header Auth)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Apify run-sync-get-dataset-items returns an array of dataset items.\n// n8n HTTP node delivers it as either {json: <array>} or wraps in {json: {body: <array>}}.\n// Explode into one n8n item per dataset record.\nconst out = [];\nfor (const item of $input.all()) {\n  const j = item.json;\n  let arr = null;\n  if (Array.isArray(j)) arr = j;\n  else if (j && Array.isArray(j.body)) arr = j.body;\n  else if (j && Array.isArray(j.data)) arr = j.data;\n  else if (j && typeof j === 'object') arr = [j];\n  if (!arr) continue;\n  for (const r of arr) {\n    if (r && typeof r === 'object') out.push({ json: r });\n  }\n}\nreturn out;\n"
+      },
+      "id": "0dace50f-baa1-4704-9b7d-7a62c6aa2813",
+      "name": "Flatten Apify Dataset",
+      "type": "n8n-nodes-base.code",
+      "position": [160, 832],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "content": "# ⚡ Trigger\nForm-driven. A recruiter submits the lead form\n(niche roles, location, minimum posting age) and\nthis fires a one-off pull. No baked-in config.",
+        "height": 480,
+        "width": 368,
+        "color": 4
+      },
+      "id": "531023a6-11a2-4436-8668-c7a9cf5aa922",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [128, 96],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "# 🔍 Build & Send Search Query\nReads the recruiter form into a search config and\nsplits it into individual LinkedIn queries (with\nrun + budget guards). Uses the widest date window\non purpose, the goal is to surface OLD, still-open\npostings, then rank them by age downstream.",
+        "height": 480,
+        "width": 752,
+        "color": 6
+      },
+      "id": "9b686b7c-85fe-4e17-8046-63dbdb79bbfe",
+      "name": "Sticky Note1",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [512, 96],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "# 🧹 Clean & Score (leads)\nFlattens and normalizes the Apify results, dedups,\nthen DROPS anything younger than the staleness\nfloor and any staffing/recruiting firms. What\nremains is scored as a lead: older posting +\nhard-to-fill + on-niche + hiring-intent language\nscores higher.",
+        "height": 560,
+        "width": 496,
+        "color": 6
+      },
+      "id": "b7c037b8-bbc7-43b4-8199-beceb264df35",
+      "name": "Sticky Note2",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [128, 592],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "# 🗃️ Postgres Store (leads)\n  **Two tables. `seen_leads` is the dedup ledger and the persistence signal: it tracks first_seen, last_seen, and times_seen, so a role that keeps reappearing across scans is a proven long-open lead. New leads land in `leads` with lead score, posting age, and campaign label; the front end filters and works them.**",
+        "height": 560,
+        "width": 624,
+        "color": 6
+      },
+      "id": "faf2b884-f008-4bc7-884a-b75a8cf060f8",
+      "name": "Sticky Note3",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [640, 592],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "# 📨 Outreach Package (Claude agents)\n  **Hands the run off to the self-hosted FastAPI service. A Haiku agent reviews and tiers every new lead in Postgres automatically. Drafting stays manual: you pick the leads worth pursuing in the web UI, and a Sonnet agent writes a LinkedIn message + cold email referencing the specific long-open role, then stages them (per-campaign CSV/JSON) for your email tool or CRM. Nothing auto-sends.**",
+        "height": 560,
+        "width": 592,
+        "color": 6
+      },
+      "id": "7dd44a8a-fc77-4d6b-ad33-b45a546e0209",
+      "name": "Sticky Note4",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [1280, 592],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "# 🔔 Slack Notify\nBuilds a summary of new leads found this run. If any\nexist and SLACK_WEBHOOK_URL is set, it fires a Slack\nalert to your channel. No results, no noise.",
+        "height": 480,
+        "width": 592,
+        "color": 6
+      },
+      "id": "2765e91a-edfb-47fd-99eb-4f6aa4c4ae3a",
+      "name": "Sticky Note5",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [1280, 96],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.REVIEW_API_URL || 'http://localhost:8094') + '/leads/review' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"chain_outreach\": false,\n  \"all_pending\": false,\n  \"post_slack\": false\n}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 3600000
+        }
+      },
+      "id": "aafa9f44-ee6d-4cc7-bf6d-4d82aec159f0",
+      "name": "Trigger Review + Build",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [1488, 912],
+      "typeVersion": 4.2,
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "Job Pipeline API Bearer"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.slackWebhookUrl || 'https://hooks.slack.com/services/DISABLED' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": {{ JSON.stringify($json.message || \"\") }},\n  \"mrkdwn\": true,\n  \"unfurl_links\": false,\n  \"unfurl_media\": false\n}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "text",
+              "outputPropertyName": "=data"
+            }
+          }
+        }
+      },
+      "id": "bf230496-724c-4278-80fa-de4769fcf2dd",
+      "name": "Notify Run Summary",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [2192, 512],
+      "typeVersion": 4.2
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO seen_leads (lead_id, source, status, first_seen, last_seen, times_seen)\nVALUES ($1, $2, 'new', NOW(), NOW(), 1)\nON CONFLICT (lead_id) DO UPDATE SET last_seen = NOW(), times_seen = seen_leads.times_seen + 1;",
+        "options": {
+          "queryReplacement": "={{ (() => { const d = $('Dedup and Score').all().find(x => String(x.json.sourceId) === String($json.lead_id))?.json || {}; return [ String($json.lead_id), String(d.source||'').toLowerCase() ]; })() }}"
+        }
+      },
+      "id": "73143238-16e9-4939-84e0-5009b6be7eb2",
+      "name": "Mark as Seen",
+      "type": "n8n-nodes-base.postgres",
+      "position": [1152, 848],
+      "typeVersion": 2.6,
+      "credentials": {
+        "postgres": {
+          "name": "Job Pipeline Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const NL = String.fromCharCode(10);\nconst items = $input.all();\nconst r = (items[0] && items[0].json) || {};\nconst date = r.date || new Date().toISOString().split('T')[0];\nfunction tryNode(name){ try { const n=$(name).first(); return (n&&n.json&&n.json.slackWebhookUrl)||''; } catch(e){ return ''; } }\nlet slackWebhookUrl = tryNode('Config');\nif (!slackWebhookUrl) slackWebhookUrl = ($env.SLACK_WEBHOOK_URL || '');\n\n// The outreach endpoint response shape may vary; be defensive.\nconst outreach = r.outreach || r.build || {};\nconst drafted = Array.isArray(outreach.leads) ? outreach.leads : (Array.isArray(outreach.packages) ? outreach.packages : []);\n\nconst lines = [':briefcase: *Recruiter lead run - ' + date + '*'];\nif (outreach.error) {\n  lines.push('Outreach FAILED: ' + outreach.error);\n} else if (drafted.length > 0) {\n  lines.push(drafted.length + ' outreach drafts staged (LinkedIn + email):');\n  for (const p of drafted.slice(0, 20)) { lines.push('- ' + (p.role_title || p.title || '?') + ' @ ' + (p.company || '?')); }\n} else {\n  lines.push('Run complete. No outreach drafted this run.');\n}\nconst message = lines.join(NL);\nreturn [{ json: { message, slackWebhookUrl, date, outreach } }];\n"
+      },
+      "id": "f3550186-cf5f-460c-8cb8-54e21650278d",
+      "name": "Format Run Summary",
+      "type": "n8n-nodes-base.code",
+      "position": [1984, 512],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "content": "# 📊 Final Run Summary\n\n**Builds a digest of the run (leads found, top by staleness, outreach drafts staged) and posts it to your Slack, so you can see the campaign's progress at a glance, straight from Postgres.**",
+        "height": 640,
+        "width": 496,
+        "color": 4
+      },
+      "id": "3b98174a-6ff6-4339-9d6d-e6c96365750a",
+      "name": "Sticky Note6",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [1888, 272],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "job-pipeline/aging-listings",
+        "authentication": "headerAuth",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "22dc9116-5a2b-44a1-a6b6-b2d1b21297bf",
+      "name": "Webhook (Custom Form)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [224, 304],
+      "webhookId": "b8f2c1a4-7d3e-4a1b-9c6f-2e5a8d0b3f47",
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "Job Pipeline Webhook Auth"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Config": {
+      "main": [[{ "node": "Split LinkedIn Queries", "type": "main", "index": 0 }]]
+    },
+    "Run Apify (HTTP Sync)": {
+      "main": [[{ "node": "Flatten Apify Dataset", "type": "main", "index": 0 }]]
+    },
+    "Has Notifications?": {
+      "main": [[{ "node": "Send Slack Alert", "type": "main", "index": 0 }], []]
+    },
+    "Trigger Review + Build": {
+      "main": [[{ "node": "Format Run Summary", "type": "main", "index": 0 }]]
+    },
+    "Mark as Seen": {
+      "main": [[{ "node": "Trigger Review + Build", "type": "main", "index": 0 }]]
+    },
+    "Normalize LinkedIn": {
+      "main": [[{ "node": "Dedup and Score", "type": "main", "index": 0 }]]
+    },
+    "Flatten Apify Dataset": {
+      "main": [[{ "node": "Normalize LinkedIn", "type": "main", "index": 0 }]]
+    },
+    "Format Run Summary": {
+      "main": [[{ "node": "Notify Run Summary", "type": "main", "index": 0 }]]
+    },
+    "Dedup and Score": {
+      "main": [[{ "node": "Filter Already Seen", "type": "main", "index": 0 }]]
+    },
+    "Build Notification": {
+      "main": [[{ "node": "Has Notifications?", "type": "main", "index": 0 }]]
+    },
+    "Split LinkedIn Queries": {
+      "main": [[{ "node": "Run Apify (HTTP Sync)", "type": "main", "index": 0 }]]
+    },
+    "Is New Job?": {
+      "main": [
+        [{ "node": "Create Jobs Record", "type": "main", "index": 0 }],
+        [{ "node": "Skip Existing", "type": "main", "index": 0 }]
+      ]
+    },
+    "Filter Already Seen": {
+      "main": [[{ "node": "Is New Job?", "type": "main", "index": 0 }]]
+    },
+    "Webhook (Custom Form)": {
+      "main": [[{ "node": "Config", "type": "main", "index": 0 }]]
+    },
+    "Create Jobs Record": {
+      "main": [
+        [
+          { "node": "Mark as Seen", "type": "main", "index": 0 },
+          { "node": "Build Notification", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

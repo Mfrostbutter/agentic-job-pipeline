@@ -46,6 +46,37 @@ def post_review_summary(payload: dict) -> bool:
 
     text = "\n".join(lines)
 
+    return _post(text)
+
+
+def post_lead_summary(payload: dict) -> bool:
+    """Post a recruiter-mode review+outreach summary to Slack (leads shape)."""
+    if not SLACK_WEBHOOK_URL:
+        return False
+
+    review = payload.get("review", {}) or {}
+    outreach = payload.get("outreach", {}) or {}
+
+    lines = [
+        f"*Recruiter lead run: {payload.get('date', '?')}*",
+        f"Reviewed: {review.get('reviewed', 0)}  •  "
+        f"Top: {review.get('top', 0)}  •  "
+        f"Second: {review.get('second', 0)}  •  "
+        f"Rejected: {review.get('rejected', 0)}",
+    ]
+    if review.get("errors"):
+        lines.append(f"⚠️ Review errors: {review['errors']}")
+
+    drafts = outreach.get("leads") if isinstance(outreach, dict) else None
+    drafts = drafts or []
+    if drafts:
+        lines.append("\n*Outreach drafted:*")
+        for d in drafts:
+            lines.append(f"• {d.get('role_title', '?')} @ {d.get('company', '?')}")
+    return _post("\n".join(lines))
+
+
+def _post(text: str) -> bool:
     try:
         resp = requests.post(
             SLACK_WEBHOOK_URL,

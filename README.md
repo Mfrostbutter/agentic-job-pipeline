@@ -62,7 +62,7 @@ docker compose up -d --build
 open http://localhost:8094/jobs/ui   # paste your API_BEARER_TOKEN when prompted
 ```
 
-Then import the two workflows from [n8n/](n8n/) into your n8n instance, create the four credentials, and set `SLACK_WEBHOOK_URL` in n8n's environment if you want digests. Full walkthrough in [docs/SETUP.md](docs/SETUP.md).
+Then import the workflows from [n8n/](n8n/) into your n8n instance, create the four credentials, and set `SLACK_WEBHOOK_URL` in n8n's environment if you want digests. Full walkthrough in [docs/SETUP.md](docs/SETUP.md).
 
 ![Slack digest](https://raw.githubusercontent.com/Mfrostbutter/agentic-job-pipeline/main/docs/screenshots/slack-digest.png)
 
@@ -71,11 +71,11 @@ Then import the two workflows from [n8n/](n8n/) into your n8n instance, create t
 | Path | What it is |
 |---|---|
 | `app/` | FastAPI service: bearer-gated API + single-file web UI (`/jobs/ui`) |
-| `pipeline/` | The agents and data layer: `review_new_jobs.py`, `build_packages.py`, `jobs_repo.py`, `seen_jobs_db.py`, `render_resume.py` |
-| `profile/` | YOUR search config, background digest, and resume templates (examples ship; real files are gitignored) |
-| `n8n/` | Both workflow exports, sanitized and import-ready |
-| `form/` | Standalone custom-scrape form (single HTML file, no server) |
-| `schema.sql` | Postgres schema: `jobs` + `seen_jobs` |
+| `pipeline/` | The agents and data layer. Job mode: `review_new_jobs.py`, `build_packages.py`, `jobs_repo.py`. Recruiter mode: `review_leads.py`, `outreach_packages.py`, `leads_repo.py`. Plus `seen_jobs_db.py`, `render_resume.py` |
+| `profile/` | YOUR search config, background digest, and resume/desk templates (examples ship; real files are gitignored) |
+| `n8n/` | Workflow exports (scheduled + custom-form job scrape, plus the recruiter aging-listings scan), sanitized and import-ready |
+| `form/` | Standalone forms: `index.html` (job scrape) and `recruiter.html` (aging-listings lead scan) |
+| `schema.sql` | Postgres schema: `jobs` + `seen_jobs` (job mode) and `leads` + `seen_leads` (recruiter mode) |
 | `docs/` | Setup walkthrough, recruiter mode, screenshots |
 
 ## The dual-use idea

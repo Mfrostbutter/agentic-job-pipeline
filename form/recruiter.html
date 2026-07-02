@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Aging-Listings Lead Scan - Recruiter Mode</title>
+<!--
+  Standalone single-file lead-scan form for recruiter mode. Open it in any
+  browser (no server needed) and point it at your n8n instance. Posts JSON to
+  the "Recruiter Lead Finder - Aging Listings (Form)" workflow's authenticated
+  webhook:
+      <n8n base>/webhook/job-pipeline/aging-listings
+  The bearer token must match the "Job Pipeline Webhook Auth" header-auth
+  credential in n8n (same value as API_BEARER_TOKEN in .env).
+-->
+<script src="https://cdn.tailwindcss.com"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.3/dist/cdn.min.js"></script>
+<style>
+  [x-cloak] { display: none !important; }
+  body { font-family: ui-sans-serif, system-ui, sans-serif; background: #fafafa; }
+</style>
+</head>
+<body>
+<div x-data="leadForm()" x-cloak class="min-h-screen flex items-start justify-center py-10 px-4">
+  <div class="w-full max-w-xl">
+    <div class="bg-white border border-gray-200 rounded-lg shadow-sm">
+      <div class="px-6 py-4 border-b border-gray-200">
+        <h1 class="text-lg font-semibold text-gray-900">Aging-listings lead scan</h1>
+        <p class="text-sm text-gray-500 mt-0.5">Finds job postings that have been open a while (a long-open role is a company that needs help filling it). Results land in your leads database, tagged with the campaign.</p>
+      </div>
+
+      <form @submit.prevent="submit()" class="p-6 space-y-4">
+        <!-- Connection settings -->
+        <details class="rounded-md border border-gray-200 bg-gray-50 px-3 py-2" :open="!settingsOk">
+          <summary class="text-sm font-medium text-gray-700 cursor-pointer select-none">
+            Connection <span class="text-xs font-normal" :class="settingsOk ? 'text-green-600' : 'text-amber-600'"
+              x-text="settingsOk ? '(configured)' : '(needs setup)'"></span>
+          </summary>
+          <div class="mt-3 space-y-3">
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1">n8n base URL</label>
+              <input type="url" x-model="n8nBase" @change="persist()" placeholder="http://localhost:5678"
+                     class="w-full text-sm border border-gray-300 rounded-md px-3 py-2" />
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1">Bearer token</label>
+              <input type="password" x-model="token" @change="persist()" placeholder="same value as API_BEARER_TOKEN"
+                     class="w-full text-sm border border-gray-300 rounded-md px-3 py-2 font-mono" />
+              <p class="text-[11px] text-gray-400 mt-1">Stored only in this browser's localStorage.</p>
+            </div>
+          </div>
+        </details>
+
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Niche roles you fill <span class="text-red-500">*</span></label>
+          <input type="text" x-model="form.niche_keywords" required
+                 placeholder="Data Engineer, Analytics Engineer, Head of Data"
+                 class="w-full text-sm border border-gray-300 rounded-md px-3 py-2" />
+          <p class="text-xs text-gray-400 mt-1">Comma-separated. Each fires a separate LinkedIn search. Max 10 total searches across roles x workplace types.</p>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Territory / location <span class="text-red-500">*</span></label>
+            <input type="text" x-model="form.location" required placeholder="United States"
+                   class="w-full text-sm border border-gray-300 rounded-md px-3 py-2" />
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Workplace type</label>
+            <select x-model="form.workplace_type" class="w-full text-sm border border-gray-300 rounded-md px-3 py-2 bg-white">
+              <option value="any">Any (remote + hybrid)</option>
+              <option value="remote">Remote only</option>
+              <option value="hybrid">Hybrid only</option>
+              <option value="on-site">On-site</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Min posting age (weeks)</label>
+            <input type="number" min="1" max="26" step="1" x-model.number="form.min_posting_age_weeks"
+                   class="w-full text-sm border border-gray-300 rounded-md px-3 py-2" />
+            <p class="text-xs text-gray-400 mt-1">Staleness floor. Postings younger than this are dropped: they are not "aging" yet.</p>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Pages (1-5)</label>
+            <input type="number" min="1" max="5" step="1" x-model.number="form.pages"
+                   class="w-full text-sm border border-gray-300 rounded-md px-3 py-2" />
+            <p class="text-xs text-gray-400 mt-1">More pages = deeper scan = more Apify credits.</p>
+          </div>
+        </div>
+
+        <label class="flex items-center gap-2 text-sm text-gray-700">
+          <input type="checkbox" x-model="form.exclude_staffing_firms" class="rounded border-gray-300" />
+          Exclude staffing / recruiting firms (skip competitors)
+        </label>
+
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Campaign label (optional)</label>
+          <input type="text" x-model="form.campaign_label" maxlength="80"
+                 placeholder="q3-data-desk, chicago-fintech"
+                 class="w-full text-sm border border-gray-300 rounded-md px-3 py-2" />
+          <p class="text-xs text-gray-400 mt-1">Written to every lead this scan inserts, and used to group the staged outreach export.</p>
+        </div>
+
+        <div class="rounded-md bg-blue-50 border border-blue-100 px-3 py-2 text-xs text-blue-800">
+          Uses real Apify credits (about 5 cents per 25 results). The webhook can take 1-5 minutes to return while the scan runs.
+        </div>
+
+        <div class="flex items-center justify-between pt-1">
+          <span class="text-xs" :class="statusKind === 'error' ? 'text-red-600' : (statusKind === 'ok' ? 'text-green-700' : 'text-gray-500')"
+                x-text="status"></span>
+          <button type="submit" :disabled="busy"
+                  class="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-medium rounded-md px-4 py-2">
+            <svg x-show="busy" class="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.5" opacity="0.25"/><path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="2.5" fill="none"/></svg>
+            <span x-text="busy ? 'Scanning...' : 'Run lead scan'"></span>
+          </button>
+        </div>
+      </form>
+    </div>
+    <p class="text-center text-xs text-gray-400 mt-4">
+      Recruiter mode. Leads appear in the web UI after the scan; flag the ones worth pursuing to draft outreach.
+    </p>
+  </div>
+</div>
+
+<script>
+  function leadForm() {
+    return {
+      n8nBase: localStorage.getItem('n8n_base') || 'http://localhost:5678',
+      token: localStorage.getItem('jobpipeline_token') || '',
+      busy: false,
+      status: '',
+      statusKind: '',
+      form: {
+        niche_keywords: '',
+        location: 'United States',
+        workplace_type: 'any',
+        min_posting_age_weeks: 4,
+        pages: 3,
+        exclude_staffing_firms: true,
+        campaign_label: '',
+      },
+      get settingsOk() { return !!(this.n8nBase && this.token); },
+      persist() {
+        localStorage.setItem('n8n_base', (this.n8nBase || '').trim().replace(/\/+$/, ''));
+        localStorage.setItem('jobpipeline_token', (this.token || '').trim());
+      },
+      async submit() {
+        this.persist();
+        if (!this.token) { this.setStatus('Set the bearer token under Connection first.', 'error'); return; }
+        const niche = (this.form.niche_keywords || '').trim();
+        if (!niche) { this.setStatus('Niche roles are required.', 'error'); return; }
+        if (!this.form.location.trim()) { this.setStatus('Location is required.', 'error'); return; }
+
+        const body = {
+          niche_keywords: niche,
+          location: this.form.location.trim(),
+          workplace_type: this.form.workplace_type || 'any',
+          min_posting_age_weeks: Math.max(1, Math.min(26, Number(this.form.min_posting_age_weeks) || 4)),
+          pages: Math.max(1, Math.min(5, Number(this.form.pages) || 3)),
+          exclude_staffing_firms: !!this.form.exclude_staffing_firms,
+          campaign_label: (this.form.campaign_label || '').trim(),
+        };
+
+        this.busy = true;
+        this.setStatus('Running (this can take a few minutes)...', '');
+        const url = (this.n8nBase || '').replace(/\/+$/, '') + '/webhook/job-pipeline/aging-listings';
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 360000);
+        try {
+          const resp = await fetch(url, {
+            method: 'POST',
+            headers: { 'Authorization': 'Bearer ' + this.token, 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            signal: ctrl.signal,
+          });
+          clearTimeout(t);
+          const text = await resp.text();
+          let data = null;
+          try { data = text ? JSON.parse(text) : null; } catch (e) {}
+          if (!resp.ok) {
+            this.setStatus('Failed (' + resp.status + '): ' + ((data && (data.message || data.error)) || text || 'unknown'), 'error');
+            return;
+          }
+          const added = data && (data.succeeded ?? data.count);
+          this.setStatus('Done. ' + (added != null ? added + ' new leads added.' : (data?.message || 'Check the web UI.')), 'ok');
+        } catch (e) {
+          clearTimeout(t);
+          this.setStatus(e.name === 'AbortError'
+            ? 'No response in 6 minutes. The workflow may still be running in n8n.'
+            : 'Request failed: ' + (e.message || e), 'error');
+        } finally {
+          this.busy = false;
+        }
+      },
+      setStatus(msg, kind) { this.status = msg; this.statusKind = kind; },
+    };
+  }
+</script>
+</body>
+</html>

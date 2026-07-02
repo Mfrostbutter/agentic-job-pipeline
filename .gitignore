@@ -12,6 +12,9 @@ profile/resume-template.md
 data/
 *.pdf
 
+# Staged recruiter outreach (drafts + per-campaign exports may name real leads)
+out/
+
 # Python
 __pycache__/
 *.pyc

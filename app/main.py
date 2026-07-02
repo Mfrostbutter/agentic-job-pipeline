@@ -17,7 +17,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from . import jobs_api, slack
+from . import jobs_api, leads_api, slack
 from .config import API_BEARER_TOKEN, VERSION
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -70,6 +70,17 @@ class BuildRequest(BaseModel):
     no_pdf: bool = Field(False)
 
 
+class LeadReviewRequest(BaseModel):
+    chain_outreach: bool = Field(False, description="If true, draft outreach after review for any leads already flagged build_outreach. Default false: drafting is gated on the manual flag so you control API spend.")
+    all_pending: bool = Field(False, description="Drop the today-only filter; review every unreviewed Status=New lead.")
+    limit: int | None = Field(None, description="Cap review to N leads (smoke tests).")
+    post_slack: bool = Field(False, description="Post the summary to Slack from within the service. If false, the caller (n8n) renders the Slack message itself.")
+
+
+class OutreachRequest(BaseModel):
+    limit: int | None = Field(None)
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -112,6 +123,43 @@ def jobs_build(req: BuildRequest) -> dict:
 @app.get("/jobs/build/status", dependencies=[Depends(require_bearer)])
 def jobs_build_status() -> dict:
     return {"running": jobs_api.build_in_progress()}
+
+
+# ---------------------------------------------------------------------------
+# Recruiter mode ("aging listings"): review = Haiku triage (auto, in-workflow);
+# outreach = Sonnet LinkedIn + email drafting (manual, gated on build_outreach).
+# ---------------------------------------------------------------------------
+
+@app.post("/leads/review", dependencies=[Depends(require_bearer)])
+def leads_review(req: LeadReviewRequest) -> dict:
+    log.info("POST /leads/review chain_outreach=%s all_pending=%s limit=%s",
+             req.chain_outreach, req.all_pending, req.limit)
+    result = leads_api.run_review_then_outreach(
+        chain_outreach=req.chain_outreach,
+        all_pending=req.all_pending,
+        limit=req.limit,
+    )
+    if req.post_slack:
+        slack.post_lead_summary(result)
+    return result
+
+
+@app.post("/leads/outreach", dependencies=[Depends(require_bearer)])
+def leads_outreach(req: OutreachRequest) -> dict:
+    log.info("POST /leads/outreach limit=%s", req.limit)
+    try:
+        return leads_api.run_outreach(limit=req.limit)
+    except leads_api.OutreachInProgress as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": "outreach_in_progress",
+                    "message": str(e) or "An outreach run is already active; skipped this trigger"},
+        )
+
+
+@app.get("/leads/outreach/status", dependencies=[Depends(require_bearer)])
+def leads_outreach_status() -> dict:
+    return {"running": leads_api.outreach_in_progress()}
 
 
 # ---------------------------------------------------------------------------
